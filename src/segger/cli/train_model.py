@@ -4,6 +4,11 @@ import os
 from segger.cli.utils import add_options, CustomFormatter
 from pathlib import Path
 import logging
+from pytorch_lightning.loggers import CSVLogger
+
+
+# Path to default yaml config file
+train_yml = Path(__file__).parent / 'configs' / 'train' / 'default.yaml'
 
 
 def train_model(args):
@@ -16,21 +21,18 @@ def train_model(args):
 
     # Import packages
     logging.info("Importing packages...")
-    from segger.data.utils import XeniumDataset
+    from segger.data.xenium_sample_parquet import XeniumPyGDataset
     from torch_geometric.loader import DataLoader
     from torch_geometric.nn import to_hetero
     from segger.training.train import LitSegger
-    from lightning import Trainer
+    from pytorch_lightning import Trainer
     logging.info("Done.")
 
     # Load datasets
     logging.info("Loading Xenium datasets...")
-    trn_ds = XeniumDataset(root=Path(args.data_dir) / 'train_tiles')
-    val_ds = XeniumDataset(root=Path(args.data_dir) / 'val_tiles')
-    kwargs = dict(
-        num_workers=0,
-        pin_memory=True,
-    )
+    trn_ds = XeniumPyGDataset(root=Path(args.data_dir) / 'train')
+    val_ds = XeniumPyGDataset(root=Path(args.data_dir) / 'val')
+    kwargs = dict(num_workers=0, pin_memory=True)
     trn_loader = DataLoader(
         trn_ds, batch_size=args.batch_size_train, shuffle=True, **kwargs
     )
@@ -42,7 +44,7 @@ def train_model(args):
     # Initialize model
     logging.info("Initializing Segger model and trainer...")
     metadata = (
-        ["tx", "nc"], [("tx", "belongs", "nc"), ("tx", "neighbors", "tx")]
+        ["tx", "bd"], [("tx", "belongs", "bd"), ("tx", "neighbors", "tx")]
     )
     lit_segger = LitSegger(
         init_emb=args.init_emb,
@@ -61,6 +63,7 @@ def train_model(args):
         devices=args.devices,
         max_epochs=args.epochs,
         default_root_dir=args.model_dir,
+        logger=CSVLogger(args.model_dir),
     )
     logging.info("Done.")
 
@@ -72,9 +75,6 @@ def train_model(args):
         val_dataloaders=val_loader,
     )
     logging.info("Done...")
-
-
-train_yml = Path(__file__).parent / 'configs' / 'train' / 'default.yaml'
 
 
 @click.command(name="slurm", help="Train on Slurm cluster")

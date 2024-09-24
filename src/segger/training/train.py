@@ -109,7 +109,7 @@ class LitSegger(LightningModule):
         """
         self.model = model
 
-    def forward(self, batch: SpatialTranscriptomicsDataset) -> torch.Tensor:
+    def forward(self, batch: XeniumPyGDataset) -> torch.Tensor:
         """
         Forward pass for the batch of data.
 

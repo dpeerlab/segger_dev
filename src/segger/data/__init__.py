@@ -3,7 +3,7 @@ Data module for Segger.
 
 Contains utilities for handling and processing spatial transcriptomics data.
 """
-
+"""
 __all__ = [
     "XeniumSample", 
     "MerscopeSample", 
@@ -36,4 +36,4 @@ from .constants import (
     XeniumKeys, 
     MerscopeKeys
 )
-
+"""

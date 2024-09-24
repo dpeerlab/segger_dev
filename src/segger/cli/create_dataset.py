@@ -11,8 +11,9 @@ import time
 data_yml = Path(__file__).parent / 'configs' / 'create_dataset' / 'default.yaml'
 
 # CLI command to create a Segger dataset
-help_msg = "Create Segger dataset from spatial transcriptomics data (Xenium or MERSCOPE)"
+help_msg = "Create Segger dataset from spatial transcriptomics data"
 @click.command(name="create_dataset", help=help_msg)
+#@click.option('--foo', default="bar")  # add more options above, not below
 @add_options(config_path=data_yml)
 @click.option('--dataset_dir', type=Path, required=True, help='Directory containing the raw dataset.')
 @click.option('--data_dir', type=Path, required=True, help='Directory to save the processed Segger dataset.')

@@ -106,3 +106,6 @@ repository = "https://github.com/EliHei2/segger_dev"
 [tool.setuptools]
 packages = ["segger"]
 package-dir = {"" = "src"}
+
+[project.scripts]
+segger = "segger.cli.cli:segger"
