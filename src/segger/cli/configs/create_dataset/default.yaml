@@ -3,87 +3,37 @@ data_dir:
   required: true
   help: "Directory to store raw and processed data."
 
-xenium_dir: 
+sample_dir: 
   type: str
   required: true
-  help: "Path to Xenium dataset."
+  help: "Path to spatial transcriptomics sample."
 
-x_min:
-  type: float
+sample_type: 
+  type: str
   default: null
-  help: "Minimum x-coordinate for bounding box to read."
+  help: "Type of spatial transcriptomics sample (e.g., 'xenium')."
 
-y_min:
-  type: float
+tile_size:
+  type: int
+  default: 100000
+  help: "Maximum no. transcripts per tile."
+
+tile_width:
+  type: int
   default: null
-  help: "Minimum y-coordinate for bounding box to read."
-
-x_max:
-  type: float
-  default: null
-  help: "Maximum x-coordinate for bounding box to read."
-
-y_max:
-  type: float
-  default: null
-  help: "Maximum y-coordinate for bounding box to read."
-
-min_qv: 
-  type: int
-  default: 30
-  help: "Minimum quality value for filtering transcripts."
-
-d_x: 
-  type: int
-  default: 180
-  help: "Step size in x direction for tiles."
-
-d_y: 
-  type: int
-  default: 180
-  help: "Step size in y direction for tiles."
-
-x_size: 
-  type: int
-  default: 200
   help: "Width of each tile."
 
-y_size: 
+tile_height: 
   type: int
-  default: 200
+  default: null
   help: "Height of each tile."
 
-margin_x: 
-  type: int
-  default: null
-  help: "Margin in x direction."
-
-margin_y: 
-  type: int
-  default: null
-  help: "Margin in y direction."
-
-r_tx: 
-  type: int
-  default: 3
-  help: "Radius for building the graph."
-
-val_prob: 
-  type: float
-  default: 0.1
-  help: "Probability of assigning a tile to the validation set."
-
-test_prob: 
-  type: float
-  default: 0.1
-  help: "Probability of assigning a tile to the test set."
-
-k_nc: 
+k_bd: 
   type: int
   default: 3
   help: "Number of nearest neighbors for nuclei."
 
-dist_nc: 
+dist_bd: 
   type: int
   default: 4
   help: "Distance threshold for nuclei."
@@ -98,15 +48,25 @@ dist_tx:
   default: 1
   help: "Distance threshold for transcripts."
 
-compute_labels: 
-  type: bool
-  default: true
-  help: "Whether to compute edge labels."
+val_prob: 
+  type: float
+  default: 0.1
+  help: "Probability of assigning a tile to the validation set."
+
+test_prob: 
+  type: float
+  default: 0.1
+  help: "Probability of assigning a tile to the test set."
 
 sampling_rate: 
   type: float
   default: 1
   help: "Rate of sampling tiles."
+
+neg_sampling_ratio:
+  type: float
+  default: 5
+  help: "Ratio of negative edges to sample for training."
 
 n_workers: 
   type: int

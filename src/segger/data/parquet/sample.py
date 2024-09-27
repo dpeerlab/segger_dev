@@ -1,73 +1,112 @@
 import os
-import sys
-import gc
 import shapely
-from pyarrow import parquet as pq
+from pyarrow import parquet as pq, compute as pc
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from sklearn.preprocessing import OneHotEncoder
-import yaml
 import geopandas as gpd
-from segger.data.xenium_utils import *
+from segger.data.parquet import _utils as utils
 from scipy.spatial import KDTree, Rectangle
-from segger.data._ndtree import NDTree
-from multiprocessing import Pool
+from segger.data.parquet._ndtree import NDTree
 from functools import cached_property
-from typing import List, Tuple, Optional, Callable, TYPE_CHECKING
-import inspect
+from typing import List, Optional
 import logging
-import json
 from itertools import compress
-import psutil
-from pqdm.processes import pqdm
-from itertools import repeat
-from joblib import Parallel, delayed
-import glob
-from torch_geometric.data import HeteroData, InMemoryDataset, Data
+from torch_geometric.data import HeteroData
 from torch_geometric.transforms import RandomLinkSplit
 import torch
 from pqdm.threads import pqdm
 import random
+from segger.data.parquet.transcript_embedding import TranscriptEmbedding
 
 
-# TODO: Add documentation
-class XeniumFilename:
-    transcripts = "transcripts.parquet"
-    boundaries = "nucleus_boundaries.parquet"
+# TODO: Add documentation for settings
+class STSampleParquet():
+    """
+    A class to manage spatial transcriptomics data stored in parquet files.
 
-
-class XeniumSampleParquet:
-    # TODO: Add documentation
+    This class provides methods for loading, processing, and saving data related 
+    to ST samples. It supports parallel processing and efficient handling of 
+    transcript and boundary data.
+    """
 
     def __init__(
         self,
         base_dir: os.PathLike,
         n_workers: Optional[int] = 1,
+        sample_type: str = None,
     ):
+        """
+        Initializes the STSampleParquet instance.
+
+        Parameters
+        ----------
+        base_dir : os.PathLike
+            The base directory containing the ST data.
+        n_workers : Optional[int], default 1
+            The number of workers for parallel processing.
+        sample_type : Optional[str], default None
+            The sample type of the raw data, e.g., 'xenium' or 'merscope'
+
+        Raises
+        ------
+        FileNotFoundError
+            If the base directory does not exist or the required files are 
+            missing.
+        """
         # Setup paths and resource constraints
-        self._base_dir = Path(base_dir)  # TODO: check that directory is valid
-        self._transcripts_filepath = base_dir / XeniumFilename.transcripts
-        self._boundaries_filepath = base_dir / XeniumFilename.boundaries
+        self._base_dir = Path(base_dir)
+        self.settings = utils.load_settings(sample_type)
+        transcripts_fn = self.settings.transcripts.filename
+        self._transcripts_filepath = self._base_dir / transcripts_fn
+        boundaries_fn = self.settings.boundaries.filename
+        self._boundaries_filepath = self._base_dir / boundaries_fn
         self.n_workers = n_workers
 
         # Setup logging
         logging.basicConfig(level=logging.INFO)
-        self.logger = logging.Logger(f'XeniumSample@{base_dir}')
+        self.logger = logging.Logger(f'STSample@{base_dir}')
 
         # Internal caches
         self._extents = None
         self._transcripts_metadata = None
         self._boundaries_metadata = None
 
+         # Setup default embedding for transcripts
+        classes = self.transcripts_metadata['feature_names']
+        self._transcript_embedding = TranscriptEmbedding(np.array(classes))
 
-    # TODO: Add documentation
+
     @classmethod
     def _get_parquet_metadata(
         cls,
         filepath: os.PathLike,
         columns: Optional[List[str]] = None,
     ) -> dict:
+        """
+        Reads and returns metadata from the parquet file.
+
+        Parameters
+        ----------
+        filepath : os.PathLike
+            The path to the parquet file.
+        columns : Optional[List[str]], default None
+            List of columns to extract metadata for. If None, all columns 
+            are used.
+
+        Returns
+        -------
+        dict
+            A dictionary containing metadata such as the number of rows,
+            number of columns, and column sizes.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the parquet file does not exist at the specified path.
+        KeyError
+            If any of the requested columns are not found in the parquet file.
+        """
         # Size in bytes of field dtypes
         size_map = {
             'BOOLEAN': 1, 
@@ -105,53 +144,91 @@ class XeniumSampleParquet:
         return summary
 
 
-    # TODO: Add documentation
     @cached_property
     def transcripts_metadata(self) -> dict:
+        """
+        Retrieves metadata for the transcripts stored in the sample.
+
+        Returns
+        -------
+        dict
+            Metadata dictionary for transcripts including column sizes and 
+            feature names.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the transcript parquet file does not exist.
+        """
         if self._transcripts_metadata is None:
             # Base metadata
-            metadata = XeniumSampleParquet._get_parquet_metadata(
+            metadata = STSampleParquet._get_parquet_metadata(
                 self._transcripts_filepath,
-                TranscriptColumns.columns,
+                self.settings.transcripts.columns,
             )
-            # Gene panel names
-            with open(self._base_dir / 'gene_panel.json', 'r') as file:
-                targets = json.load(file)['payload']['targets']
-            filter_names = tuple(e.value for e in XeniumFilterCodewords)
-            names = [t['type']['data']['name'] for t in targets]
-            names = filter(lambda n: not n.startswith(filter_names), names)
-            metadata['feature_names'] = list(names)
+            # Get filtered unique feature names
+            table = pq.read_table(self._transcripts_filepath)
+            names = pc.unique(table[self.settings.transcripts.label])
+            pattern = '|'.join(self.settings.transcripts.filter_substrings)
+            mask = pc.invert(pc.match_substring_regex(names, pattern))
+            metadata['feature_names'] = pc.filter(names, mask).tolist()
             self._transcripts_metadata = metadata
-
         return self._transcripts_metadata
 
 
-    # TODO: Add documentation
     @cached_property
     def boundaries_metadata(self) -> dict:
+        """
+        Retrieves metadata for the boundaries stored in the sample.
+
+        Returns
+        -------
+        dict
+            Metadata dictionary for boundaries including column sizes.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the boundaries parquet file does not exist.
+        """
         if self._boundaries_metadata is None:
-            metadata = XeniumSampleParquet._get_parquet_metadata(
+            metadata = STSampleParquet._get_parquet_metadata(
                 self._boundaries_filepath,
-                BoundaryColumns.columns,
+                self.settings.boundaries.columns,
             )
             self._boundaries_metadata = metadata
         return self._boundaries_metadata
 
-    # TODO: Add documentation
+
     @property
     def n_transcripts(self) -> int:
+        """
+        The total number of transcripts in the sample.
+
+        Returns
+        -------
+        int
+            The number of transcripts.
+        """
         return self.transcripts_metadata['n_rows']
 
 
-    # TODO: Add documentation
     @cached_property
-    def extents(self):
+    def extents(self) -> shapely.Polygon:
+        """
+        The combined extents (bounding box) of the transcripts and boundaries.
+
+        Returns
+        -------
+        shapely.Polygon
+            The bounding box covering all transcripts and boundaries.
+        """
         if self._extents is None:
             # Get individual extents
-            xy = TranscriptColumns.xy
-            tx_extents = get_xy_extents(self._transcripts_filepath, *xy)
-            xy = BoundaryColumns.xy
-            bd_extents = get_xy_extents(self._boundaries_filepath, *xy)
+            xy = self.settings.transcripts.xy
+            tx_extents = utils.get_xy_extents(self._transcripts_filepath, *xy)
+            xy = self.settings.boundaries.xy
+            bd_extents = utils.get_xy_extents(self._boundaries_filepath, *xy)
 
             # Combine extents and get bounding box
             extents = tx_extents.union(bd_extents)
@@ -160,11 +237,18 @@ class XeniumSampleParquet:
         return self._extents
 
 
-    # TODO: Add documentation
     def _get_balanced_regions(
         self,
     ) -> List[shapely.Polygon]:
+        """
+        Splits the sample extents into balanced regions for parallel processing.
+        See NDTree documentation for more information.
 
+        Returns
+        -------
+        List[shapely.Polygon]
+            A list of polygons representing the regions.
+        """
         # If no. workers is 1, return full extents
         if self.n_workers == 1:
             return [self.extents]
@@ -175,18 +259,44 @@ class XeniumSampleParquet:
         # a coarse level.
         data = pd.read_parquet(
             self._boundaries_filepath,
-            columns=BoundaryColumns.xy,
+            columns=self.settings.boundaries.xy,
         ).values
         ndtree = NDTree(data, self.n_workers)
 
         return ndtree.boxes
 
 
-    # TODO: Add documentation
     @staticmethod
     def _setup_directory(
         data_dir: os.PathLike,
     ):
+        """
+        Sets up the directory structure for saving processed tiles.
+
+        Ensures that the necessary subdirectories for 'train', 'test', and 
+        'val' are created under the provided base directory. If any of these 
+        subdirectories already exist and are not empty, an error is raised.
+
+        Directory structure created:
+        ----------------------------
+        data_dir/
+            ├── train/
+            │   └── processed/
+            ├── test/
+            │   └── processed/
+            └── val/
+                └── processed/
+
+        Parameters
+        ----------
+        data_dir : os.PathLike
+            The path to the base directory where the data should be stored.
+
+        Raises
+        ------
+        AssertionError
+            If any of the 'processed' directories already contain files.
+        """
         data_dir = Path(data_dir)  # by default, convert to Path object
         for dt in ['train', 'test', 'val']:
             tile_dir = data_dir / dt / 'processed'
@@ -196,24 +306,89 @@ class XeniumSampleParquet:
                 raise AssertionError(msg)
 
 
-    # TODO: Add documentation
+    def set_transcript_embedding(self, weights: pd.DataFrame):
+        """
+        Sets the transcript embedding for the sample.
+
+        Parameters
+        ----------
+        weights : pd.DataFrame
+            A DataFrame containing the weights for each transcript.
+
+        Raises
+        ------
+        ValueError
+            If the provided weights do not match the number of transcript 
+            features.
+        """
+        classes = self._transcripts_metadata['feature_names']
+        self._transcript_embedding = TranscriptEmbedding(classes, weights)
+
+
     def save(
         self,
         data_dir: os.PathLike,
-        max_size: int = 1e5,
         k_bd: int = 3,
         dist_bd: float = 15.,
         k_tx: int = 3,
         dist_tx: float = 5.,
+        tile_size: Optional[int] = None,
+        tile_width: Optional[float] = None,
+        tile_height: Optional[float] = None,
         neg_sampling_ratio: float = 5.,
         frac: float = 1.,
+        val_prob: float = 0.1,
+        test_prob: float = 0.2,
     ):
+        """
+        Saves the tiles of the sample as PyTorch geometric datasets. See 
+        documentation for 'STTile' for more information on dataset contents.
+
+        Note: This function requires either 'tile_size' OR both 'tile_width' and 
+        'tile_height' to be provided.
+
+        Parameters
+        ----------
+        data_dir : os.PathLike
+            The directory where the dataset should be saved.
+        k_bd : int, optional, default 3
+            Number of nearest neighbors for boundary nodes.
+        dist_bd : float, optional, default 15.0
+            Maximum distance for boundary neighbors.
+        k_tx : int, optional, default 3
+            Number of nearest neighbors for transcript nodes.
+        dist_tx : float, optional, default 5.0
+            Maximum distance for transcript neighbors.
+        tile_size : int, optional
+            If provided, specifies the size of the tile. Overrides `tile_width` 
+            and `tile_height`.
+        tile_width : int, optional
+            Width of the tiles in pixels. Ignored if `tile_size` is provided.
+        tile_height : int, optional
+            Height of the tiles in pixels. Ignored if `tile_size` is provided.
+        neg_sampling_ratio : float, optional, default 5.0
+            Ratio of negative samples.
+        frac : float, optional, default 1.0
+            Fraction of the dataset to process.
+        val_prob: float, optional, default 0.1
+            Proportion of data for use for validation split.
+        test_prob: float, optional, default 0.2
+            Proportion of data for use for test split.
+
+        Raises
+        ------
+        ValueError
+            If the 'frac' parameter is greater than 1.0 or if the calculated 
+            number of tiles is zero.
+        AssertionError
+            If the specified directory structure is not properly set up.
+        """
         # Check inputs
         try:
             if frac > 1:
                 msg = f"Arg 'frac' should be <= 1.0, but got {frac}."
                 raise ValueError(msg)
-            n_tiles = self.n_transcripts / max_size / self.n_workers * frac
+            n_tiles = self.n_transcripts / tile_size / self.n_workers * frac
             if int(n_tiles) == 0:
                 msg = f"Sampling parameters would yield 0 total tiles."
                 raise ValueError(msg)
@@ -224,21 +399,21 @@ class XeniumSampleParquet:
 
         # Setup directory structure to save tiles
         data_dir = Path(data_dir)
-        XeniumSampleParquet._setup_directory(data_dir)
+        STSampleParquet._setup_directory(data_dir)
 
         # Function to parallelize over workers
         def func(region):
-            xm = XeniumInMemoryDataset(sample=self, extents=region)
-            tiles = xm._tile(max_size=max_size)
+            xm = STInMemoryDataset(sample=self, extents=region)
+            tiles = xm._tile(tile_width, tile_height, tile_size)
             if frac < 1:
                 tiles = random.sample(tiles, int(len(tiles) * frac))
             for tile in tiles:
                 # Choose training, test, or validation datasets
                 data_type = np.random.choice(
                     a=['train', 'test', 'val'],
-                    p=[0.7, 0.2, 0.1],  # hard-coded for now
+                    p=[1 - (test_prob + val_prob), test_prob, val_prob],
                 )
-                xt = XeniumTile(dataset=xm, extents=tile)
+                xt = STTile(dataset=xm, extents=tile)
                 pyg_data = xt.to_pyg_dataset(
                     k_bd=k_bd,
                     dist_bd=dist_bd,
@@ -251,82 +426,175 @@ class XeniumSampleParquet:
 
         # TODO: Add Dask backend
         regions = self._get_balanced_regions()
-        outs = pqdm(regions, func, n_jobs=self.n_workers)
+        pqdm(regions, func, n_jobs=self.n_workers)
 
 
-class XeniumInMemoryDataset():
-    # TODO: Add documentation
+# TODO: Add documentation for settings
+class STInMemoryDataset():
+    """
+    A class for handling in-memory representations of ST data.
+
+    This class is used to load and manage ST sample data from parquet files,
+    filter boundaries and transcripts, and provide spatial tiling for further 
+    analysis. The class also pre-loads KDTrees for efficient spatial queries.
+
+    Parameters
+    ----------
+    sample : STSampleParquet
+        The ST sample containing paths to the data files.
+    extents : shapely.Polygon
+        The polygon defining the spatial extents for the dataset.
+    margin : int, optional, default 10
+        The margin to buffer around the extents when filtering data.
+
+    Attributes
+    ----------
+    sample : STSampleParquet
+        The ST sample from which the data is loaded.
+    extents : shapely.Polygon
+        The spatial extents of the dataset.
+    margin : int
+        The buffer margin around the extents for filtering.
+    transcripts : pd.DataFrame
+        The filtered transcripts within the dataset extents.
+    boundaries : pd.DataFrame
+        The filtered boundaries within the dataset extents.
+    kdtree_tx : KDTree
+        The KDTree for fast spatial queries on the transcripts.
+    
+    Raises
+    ------
+    ValueError
+        If the transcripts or boundaries could not be loaded or filtered.
+    """
 
     def __init__(
         self,
-        sample: XeniumSampleParquet,
+        sample: STSampleParquet,
         extents: shapely.Polygon,
         margin: int = 10,
     ):
+        """
+        Initializes the STInMemoryDataset instance by loading transcripts
+        and boundaries from parquet files and pre-loading a KDTree for fast 
+        spatial queries.
+
+        Parameters
+        ----------
+        sample : STSampleParquet
+            The ST sample containing paths to the data files.
+        extents : shapely.Polygon
+            The polygon defining the spatial extents for the dataset.
+        margin : int, optional, default 10
+            The margin to buffer around the extents when filtering data.
+        """
         # Set properties
         self.sample = sample
         self.extents = extents
         self.margin = margin
+        self.settings = self.sample.settings
 
         # Load data from parquet files
-        self._load_transcripts(sample._transcripts_filepath)
-        self._load_boundaries(sample._boundaries_filepath)
+        self._load_transcripts(self.sample._transcripts_filepath)
+        self._load_boundaries(self.sample._boundaries_filepath)
 
         # Pre-load KDTrees
-        enums = TranscriptColumns
-        self.kdtree_tx = KDTree(self.transcripts[enums.xy], leafsize=100)
+        self.kdtree_tx = KDTree(
+            self.transcripts[self.settings.transcripts.xy],
+            leafsize=100
+        )
 
 
-    # TODO: Add documentation
     def _load_transcripts(self, path: os.PathLike, min_qv: float = 30.0):
-        # Load and filter transcripts dataframe
-        enums = TranscriptColumns
-        bounds = self.extents.buffer(self.margin, join_style='mitre')
-        transcripts = read_parquet_region(
-            path,
-            x=enums.x,
-            y=enums.y,
-            bounds=bounds,
-            extra_columns=enums.columns,
-        )
-        transcripts = filter_transcripts(transcripts, min_qv)
+        """
+        Loads and filters the transcripts dataframe for the dataset.
 
-        # Transcript latent is one hot encoding of names
-        genes = transcripts[[enums.label]]
-        categories = self.sample.transcripts_metadata['feature_names']
-        encoder = OneHotEncoder(
-            categories=[categories],
-            sparse_output=False,
+        Parameters
+        ----------
+        path : os.PathLike
+            The file path to the transcripts parquet file.
+        min_qv : float, optional, default 30.0
+            The minimum quality value (QV) for filtering transcripts.
+
+        Raises
+        ------
+        ValueError
+            If the transcripts dataframe cannot be loaded or filtered.
+        """
+        # Load and filter transcripts dataframe
+        bounds = self.extents.buffer(self.margin, join_style='mitre')
+        transcripts = utils.read_parquet_region(
+            path,
+            x=self.settings.transcripts.x,
+            y=self.settings.transcripts.y,
+            bounds=bounds,
+            extra_columns=self.settings.transcripts.columns,
         )
-        encoder.fit(genes)
+        transcripts = utils.filter_transcripts(
+            transcripts,
+            self.settings.transcripts.label,
+            self.settings.transcripts.filter_substrings,
+            min_qv,
+        )
         
         # Only set object properties once everything finishes successfully
         self.transcripts = transcripts
-        self.tx_encoder = encoder
 
 
-    # TODO: Add documentation
     def _load_boundaries(self, path: os.PathLike):
+        """
+        Loads and filters the boundaries dataframe for the dataset.
+
+        Parameters
+        ----------
+        path : os.PathLike
+            The file path to the boundaries parquet file.
+
+        Raises
+        ------
+        ValueError
+            If the boundaries dataframe cannot be loaded or filtered.
+        """
         # Load and filter boundaries dataframe
-        enums = BoundaryColumns
         outset = self.extents.buffer(self.margin, join_style='mitre')
-        boundaries = read_parquet_region(
+        boundaries = utils.read_parquet_region(
             path,
-            x=enums.x,
-            y=enums.y,
+            x=self.settings.boundaries.x,
+            y=self.settings.boundaries.y,
             bounds=outset,
-            extra_columns=enums.columns
+            extra_columns=self.settings.boundaries.columns,
         )
-        boundaries = filter_boundaries(boundaries, self.extents, outset)
+        boundaries = utils.filter_boundaries(
+            boundaries,
+            inset=self.extents,
+            outset=outset,
+            x=self.settings.boundaries.x,
+            y=self.settings.boundaries.y,
+            label=self.settings.boundaries.label,
+        )
         self.boundaries = boundaries
 
 
-    # TODO: Add documentation
     def _get_rectangular_tile_bounds(
         self,
         tile_width: float,
         tile_height: float,
     ) -> List[shapely.Polygon]:
+        """
+        Generates rectangular tiles for the dataset based on the extents.
+
+        Parameters
+        ----------
+        tile_width : float
+            The width of each tile.
+        tile_height : float
+            The height of each tile.
+
+        Returns
+        -------
+        List[shapely.Polygon]
+            A list of polygons representing the rectangular tiles.
+        """
         # Generate the x and y coordinates for the tile boundaries
         x_min, y_min, x_max, y_max = self.extents.bounds
         x_coords = np.arange(x_min, x_max, tile_width)
@@ -343,12 +611,28 @@ class XeniumInMemoryDataset():
         return tiles
 
 
-    # TODO: Add documentation
     def _get_balanced_tile_bounds(
         self,
         max_size: Optional[int],
     ) -> List[shapely.Polygon]:
-        
+        """
+        Generates spatially balanced tiles based on KDTree partitioning.
+
+        Parameters
+        ----------
+        max_size : Optional[int]
+            The maximum number of points in each tile.
+
+        Returns
+        -------
+        List[shapely.Polygon]
+            A list of polygons representing balanced tile bounds.
+
+        Raises
+        ------
+        ValueError
+            If `max_size` is smaller than the KDTree's leaf size.
+        """
         # Can only request up to brute force resolution of KDTree
         leafsize = self.kdtree_tx.leafsize
         if max_size < leafsize:
@@ -368,12 +652,36 @@ class XeniumInMemoryDataset():
         return recurse(node, bounds)
 
 
-    # TODO: Add documentation
     def _tile(self,
         width: Optional[float] = None,
         height: Optional[float] = None,
         max_size: Optional[int] = None,
      ) -> List[shapely.Polygon]:
+        """
+        Generates tiles based on either fixed dimensions or balanced 
+        partitioning.
+
+        Parameters
+        ----------
+        width : Optional[float]
+            The width of each tile. Required if `max_size` is not provided.
+        height : Optional[float]
+            The height of each tile. Required if `max_size` is not provided.
+        max_size : Optional[int]
+            The maximum number of points in each tile. Required if `width` and 
+            `height` are not provided.
+
+        Returns
+        -------
+        List[shapely.Polygon]
+            A list of polygons representing the tiles.
+
+        Raises
+        ------
+        ValueError
+            If both `width`/`height` and `max_size` are provided or none are 
+            provided.
+        """
         # Square tiling kwargs provided
         if not max_size and (width and height):
             return self._get_rectangular_tile_bounds(width, height)
@@ -392,14 +700,15 @@ class XeniumInMemoryDataset():
             raise ValueError
 
 
-class XeniumTile:
+# TODO: Add documentation for settings
+class STTile:
     """
-    A class representing a tile of a Xenium sample.
+    A class representing a tile of a ST sample.
 
     Attributes
     ----------
-    dataset : XeniumInMemoryDataset
-        The Xenium dataset containing data.
+    dataset : STInMemoryDataset
+        The ST dataset containing data.
     extents : shapely.Polygon
         The extents of the tile in the sample.
     boundaries : pd.DataFrame
@@ -410,16 +719,16 @@ class XeniumTile:
 
     def __init__(
         self,
-        dataset: XeniumInMemoryDataset,
+        dataset: STInMemoryDataset,
         extents: shapely.Polygon,
     ):
         """
-        Initializes a XeniumTile instance.
+        Initializes a STTile instance.
 
         Parameters
         ----------
-        dataset : XeniumInMemoryDataset
-            The Xenium dataset containing data.
+        dataset : STInMemoryDataset
+            The ST dataset containing data.
         extents : shapely.Polygon
             The extents of the tile in the sample.
 
@@ -440,22 +749,47 @@ class XeniumTile:
         self.dataset = dataset
         self.extents = extents
         self.margin = dataset.margin
+        self.settings = self.dataset.settings
 
         # Internal caches for filtered data
         self._boundaries = None
         self._transcripts = None
 
 
-    # TODO: Add documentation
     @property
-    def uid(self):
+    def uid(self) -> str:
+        """
+        Generates a unique identifier for the tile based on its extents. This 
+        UID is particularly useful for saving or indexing tiles in distributed 
+        processing environments.
+
+        The UID is constructed using the minimum and maximum x and y coordinates
+        of the tile's bounding box, representing its position and size in the 
+        sample.
+
+        Returns
+        -------
+        str
+            A unique identifier string in the format 
+            'x=<x_min>_y=<y_min>_w=<width>_h=<height>' where:
+            - `<x_min>`: Minimum x-coordinate of the tile's extents.
+            - `<y_min>`: Minimum y-coordinate of the tile's extents.
+            - `<width>`: Width of the tile.
+            - `<height>`: Height of the tile.
+
+        Example
+        -------
+        If the tile's extents are bounded by (x_min, y_min) = (100, 200) and
+        (x_max, y_max) = (150, 250), the generated UID would be:
+        'x=100_y=200_w=50_h=50'
+        """
         x_min, y_min, x_max, y_max = map(int, self.extents.bounds)
         uid = f'x={x_min}_y={y_min}_w={x_max-x_min}_h={y_max-y_min}'
         return uid
 
 
     @cached_property
-    def boundaries(self):
+    def boundaries(self) -> pd.DataFrame:
         """
         Returns the filtered boundaries within the tile extents, cached for
         efficiency.
@@ -476,7 +810,7 @@ class XeniumTile:
 
 
     @cached_property
-    def transcripts(self):
+    def transcripts(self) -> pd.DataFrame:
         """
         Returns the filtered transcripts within the tile extents, cached for
         efficiency.
@@ -507,10 +841,13 @@ class XeniumTile:
             A DataFrame containing the filtered boundaries within the tile 
             extents.
         """
-        filtered_boundaries = filter_boundaries(
+        filtered_boundaries = utils.filter_boundaries(
             boundaries=self.dataset.boundaries,
             inset=self.extents,
-            outset=self.extents.buffer(self.margin, join_style='mitre')
+            outset=self.extents.buffer(self.margin, join_style='mitre'),
+            x=self.settings.boundaries.x,
+            y=self.settings.boundaries.y,
+            label=self.settings.boundaries.label,
         )
         return filtered_boundaries
 
@@ -532,23 +869,21 @@ class XeniumTile:
         xmin, ymin, xmax, ymax =  outset.bounds
 
         # Get transcripts inside buffered region
-        enums = TranscriptColumns
-        mask = self.dataset.transcripts[enums.x].between(xmin, xmax)
-        mask &= self.dataset.transcripts[enums.y].between(ymin, ymax)
+        x, y = self.settings.transcripts.xy
+        mask = self.dataset.transcripts[x].between(xmin, xmax)
+        mask &= self.dataset.transcripts[y].between(ymin, ymax)
         filtered_transcripts = self.dataset.transcripts[mask]
 
         return filtered_transcripts
 
 
-    def get_transcript_props(
-        self,
-    ):
+    def get_transcript_props(self) -> torch.Tensor:
         """
         Encodes transcript features in a sparse format.
 
         Returns
         -------
-        props : torch.sparse.FloatTensor
+        props : torch.Tensor
             A sparse tensor containing the encoded transcript features.
 
         Notes
@@ -559,10 +894,9 @@ class XeniumTile:
         matrix (in sparse format).
         """
         # Encode transcript features in sparse format
-        enums = TranscriptColumns
-        encoder = self.dataset.tx_encoder  # typically, a one-hot encoder
-        encoding = encoder.transform(self.transcripts[[enums.label]])
-        props = torch.as_tensor(encoding).float().to_sparse()
+        embedding = self.dataset.sample._transcript_embedding
+        label = self.settings.transcripts.label
+        props = embedding.embed(self.transcripts[label])
 
         return props
 
@@ -574,7 +908,7 @@ class XeniumTile:
         convexity: bool = True,
         elongation: bool = True,
         circularity: bool = True,
-    ):
+    ) -> pd.DataFrame:
         """
         Computes geometric properties of polygons.
 
@@ -692,10 +1026,13 @@ class XeniumTile:
         return another torch.Tensor without worrying about changes to the rest 
         of the code.
         """
-
         # Get polygons from coordinates
-        polygons = get_polygons_from_xy(self.boundaries)
-
+        polygons = utils.get_polygons_from_xy(
+            self.boundaries,
+            x=self.settings.boundaries.x,
+            y=self.settings.boundaries.y,
+            label=self.settings.boundaries.label,
+        )
         # Geometric properties of polygons
         props = self.get_polygon_props(polygons)
         props = torch.as_tensor(props.values).float()
@@ -754,12 +1091,12 @@ class XeniumTile:
         Node Types
         ----------
         1. Boundary ("bd")
-            Represents boundaries (typically cells) in the Xenium dataset.
+            Represents boundaries (typically cells) in the ST dataset.
 
             Attributes
             ----------
             id : str
-                Cell ID originating from the Xenium sample.
+                Cell ID originating from the ST sample.
             pos : np.ndarray
                 X, Y coordinates of the centroid of the polygon boundary.
             x : torch.tensor
@@ -767,12 +1104,12 @@ class XeniumTile:
                 of the polygon boundary (user-specified).
 
         2. Transcript ("tx")
-            Represents transcripts in the Xenium dataset.
+            Represents transcripts in the ST dataset.
 
             Attributes
             ----------
             id : int64
-                Transcript ID originating from Xenium sample.
+                Transcript ID originating from ST sample.
             pos : np.ndarray
                 X, Y, Z coordinates of the transcript.
             x : torch.tensor
@@ -811,25 +1148,33 @@ class XeniumTile:
         pyg_data = HeteroData()
 
         # Set up Boundary nodes
-        polygons = get_polygons_from_xy(self.boundaries)
+        polygons = utils.get_polygons_from_xy(
+            self.boundaries,
+            self.settings.boundaries.x,
+            self.settings.boundaries.y,
+            self.settings.boundaries.label,
+        )
         centroids = polygons.centroid.get_coordinates()
-        pyg_data['bd'].id = polygons.index.to_numpy().reshape(-1, 1)
+        pyg_data['bd'].id = polygons.index.to_numpy()
         pyg_data['bd'].pos = centroids.values
         pyg_data['bd'].x = self.get_boundary_props(
             area, convexity, elongation, circularity
         )
 
         # Set up Transcript nodes
-        enums = TranscriptColumns
-        pyg_data['tx'].id = self.transcripts[[enums.id]].values
-        pyg_data['tx'].pos = self.transcripts[enums.xyz].values
+        pyg_data['tx'].id = self.transcripts[
+            self.settings.transcripts.id
+        ].values
+        pyg_data['tx'].pos = self.transcripts[
+            self.settings.transcripts.xyz
+        ].values
         pyg_data['tx'].x = self.get_transcript_props()
 
         # Set up Boundary-Transcript neighbor edges
         dist = np.sqrt(polygons.area.max()) * 10  # heuristic distance
         nbrs_edge_idx = self.get_kdtree_edge_index(
             centroids,
-            self.transcripts[enums.xy],
+            self.transcripts[self.settings.transcripts.xy],
             k=k_bd,
             max_distance=dist,
         )
@@ -837,17 +1182,19 @@ class XeniumTile:
 
         # Set up Transcript-Transcript neighbor edges
         nbrs_edge_idx = self.get_kdtree_edge_index(
-            self.transcripts[enums.xy],
-            self.transcripts[enums.xy],
+            self.transcripts[self.settings.transcripts.xy],
+            self.transcripts[self.settings.transcripts.xy],
             k=k_tx,
             max_distance=dist_tx,
         )
         pyg_data["tx", "neighbors", "tx"].edge_index = nbrs_edge_idx
 
         # Find nuclear transcripts
-        tx_cell_ids = self.transcripts[BoundaryColumns.id]
+        tx_cell_ids = self.transcripts[self.settings.boundaries.id]
         cell_ids_map = {idx: i for (i, idx) in enumerate(polygons.index)}
-        is_nuclear = self.transcripts[TranscriptColumns.nuclear].astype(bool) 
+        is_nuclear = self.transcripts[
+            self.settings.transcripts.nuclear
+        ].astype(bool)
         is_nuclear &= tx_cell_ids.isin(polygons.index)
 
         # Set up overlap edges
@@ -878,79 +1225,3 @@ class XeniumTile:
         edges.edge_label = edges.edge_label[mask]
 
         return pyg_data
-
-
-class XeniumPyGDataset(InMemoryDataset):
-    """
-    A dataset class for handling SpatialTranscriptomics spatial transcriptomics 
-    data.
-
-    Attributes
-    ----------
-    root : str
-        The root directory where the dataset is stored.
-    transform : callable
-        A function/transform that takes in a Data object and returns a 
-        transformed version.
-    pre_transform : callable
-        A function/transform that takes in a Data object and returns a 
-        transformed version.
-    pre_filter : callable
-        A function that takes in a Data object and returns a boolean indicating 
-        whether to keep it.
-    """
-    def __init__(
-        self,
-        root: str,
-        transform: Optional[Callable] = None,
-        pre_transform: Optional[Callable] = None,
-        pre_filter: Optional[Callable] = None
-    ):
-        super().__init__(root, transform, pre_transform, pre_filter)
-        os.makedirs(os.path.join(self.processed_dir, 'raw'), exist_ok=True)
-
-    @property
-    def raw_file_names(self) -> List[str]:
-        """
-        Return a list of raw file names in the raw directory.
-
-        Returns:
-            List[str]: List of raw file names.
-        """
-        return os.listdir(self.raw_dir)
-
-    @property
-    def processed_file_names(self) -> List[str]:
-        """
-        Return a list of processed file names in the processed directory.
-
-        Returns:
-            List[str]: List of processed file names.
-        """
-        paths = glob.glob(f'{self.processed_dir}/*.pt')
-        file_names = list(map(os.path.basename, paths))
-        return file_names
-
-    def len(self) -> int:
-        """
-        Return the number of processed files.
-
-        Returns:
-            int: Number of processed files.
-        """
-        return len(self.processed_file_names)
-
-    def get(self, idx: int) -> Data:
-        """
-        Get a processed data object.
-
-        Args:
-            idx (int): Index of the data object to retrieve.
-
-        Returns:
-            Data: The processed data object.
-        """
-        filepath = Path(self.processed_dir) / self.processed_file_names[idx]
-        data = torch.load(filepath)
-        data['tx'].x = data['tx'].x.to_dense()
-        return data
