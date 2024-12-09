@@ -13,6 +13,7 @@ from typing import List, Optional
 import logging
 from itertools import compress
 from torch_geometric.data import HeteroData
+from torch_geometric.edge_index import EdgeIndex
 from torch_geometric.transforms import RandomLinkSplit
 import torch
 from pqdm.threads import pqdm
@@ -336,10 +337,12 @@ class STSampleParquet():
         tile_size: Optional[int] = None,
         tile_width: Optional[float] = None,
         tile_height: Optional[float] = None,
+        tile_margin: float = 10.,
         neg_sampling_ratio: float = 5.,
         frac: float = 1.,
         val_prob: float = 0.1,
         test_prob: float = 0.2,
+        parallel: Optional[bool] = None,
     ):
         """
         Saves the tiles of the sample as PyTorch geometric datasets. See 
@@ -367,6 +370,8 @@ class STSampleParquet():
             Width of the tiles in pixels. Ignored if `tile_size` is provided.
         tile_height : int, optional
             Height of the tiles in pixels. Ignored if `tile_size` is provided.
+        tile_margin : float, optional, default 10.0
+            Margin around tile boundaries to include in pixels.
         neg_sampling_ratio : float, optional, default 5.0
             Ratio of negative samples.
         frac : float, optional, default 1.0
@@ -375,6 +380,8 @@ class STSampleParquet():
             Proportion of data for use for validation split.
         test_prob: float, optional, default 0.2
             Proportion of data for use for test split.
+        parallel: bool, optional
+            Whether to save dataset in parallel across 'n_workers' workers.
 
         Raises
         ------
@@ -404,7 +411,11 @@ class STSampleParquet():
 
         # Function to parallelize over workers
         def func(region):
-            xm = STInMemoryDataset(sample=self, extents=region)
+            xm = STInMemoryDataset(
+                sample=self,
+                extents=region,
+                margin=tile_margin,
+            )
             tiles = xm._tile(tile_width, tile_height, tile_size)
             if frac < 1:
                 tiles = random.sample(tiles, int(len(tiles) * frac))
@@ -427,11 +438,14 @@ class STSampleParquet():
 
         # TODO: Add Dask backend
         regions = self._get_balanced_regions()
-        '''
-        for region in regions:
-            func(region)
-        '''
-        outs = pqdm(regions, func, n_jobs=self.n_workers)
+        if parallel is None:
+            parallel = self.n_workers > 1
+        if parallel:
+            outs = pqdm(regions, func, n_jobs=self.n_workers)
+        else:
+            outs = []
+            for region in regions:
+                outs.append(func(region))
         return outs
 
 
@@ -507,11 +521,11 @@ class STInMemoryDataset():
         # Pre-load KDTrees
         self.kdtree_tx = KDTree(
             self.transcripts[self.settings.transcripts.xy],
-            leafsize=100
+            leafsize=1,
         )
 
 
-    def _load_transcripts(self, path: os.PathLike, min_qv: float = 30.0):
+    def _load_transcripts(self, path: os.PathLike, min_qv: float = None):
         """
         Loads and filters the transcripts dataframe for the dataset.
 
@@ -519,7 +533,7 @@ class STInMemoryDataset():
         ----------
         path : os.PathLike
             The file path to the transcripts parquet file.
-        min_qv : float, optional, default 30.0
+        min_qv : float, optional
             The minimum quality value (QV) for filtering transcripts.
 
         Raises
@@ -536,11 +550,14 @@ class STInMemoryDataset():
             bounds=bounds,
             extra_columns=self.settings.transcripts.columns,
         )
+        if min_qv is None:
+            min_qv = self.settings.transcripts.min_quality
         transcripts = utils.filter_transcripts(
             transcripts,
             self.settings.transcripts.label,
             self.settings.transcripts.filter_substrings,
             min_qv,
+            self.settings.transcripts.quality,
         )
         
         # Only set object properties once everything finishes successfully
@@ -952,14 +969,15 @@ class STTile:
 
 
     @staticmethod
-    def get_kdtree_edge_index(
+    def get_kdtree_edges(
         index_coords: np.ndarray,
         query_coords: np.ndarray,
         k: int,
         max_distance: float,
     ):
         """
-        Computes the k-nearest neighbor edge indices using a KDTree.
+        Computes the k-nearest neighbor edge indices and distances using a 
+        KDTree.
 
         Parameters
         ----------
@@ -976,23 +994,32 @@ class STTile:
 
         Returns
         -------
-        torch.Tensor
+        torch_geometric.EdgeIndex
             An array of shape (2, n_edges) containing the edge indices. Each
             column represents an edge between two points, where the first row
             contains the source indices and the second row contains the target
             indices.
+        torch.Tensor
+            A tensor of shape (n_edges) containing the distances between nodes 
+            connected by each edge.
         """
         # KDTree search
         tree = KDTree(index_coords)
         dist, idx = tree.query(query_coords, k, max_distance)
 
         # To sparse adjacency
-        mask = dist != np.inf
-        edge_index = np.argwhere(mask).T
-        edge_index[1] = idx[mask]
-        edge_index = torch.tensor(edge_index, dtype=torch.long).contiguous()
-
-        return edge_index
+        edge_index = torch.vstack([
+            torch.arange(idx.shape[0]).repeat_interleave(idx.shape[1]),
+            torch.tensor(idx).flatten(),
+        ])
+        edge_index = edge_index.long().contiguous()
+        edge_index = EdgeIndex(
+            edge_index,
+            sparse_size=idx.shape,
+            sort_order='row',
+        )
+        dist = torch.tensor(dist).flatten()
+        return edge_index, dist
 
 
     def get_boundary_props(
@@ -1184,24 +1211,15 @@ class STTile:
         )
         pyg_data['tx'].x = self.get_transcript_props()
 
-        # Set up Boundary-Transcript neighbor edges
-        dist = np.sqrt(polygons.area.max()) * 10  # heuristic distance
-        nbrs_edge_idx = self.get_kdtree_edge_index(
-            centroids,
-            self.transcripts[self.settings.transcripts.xy],
-            k=k_bd,
-            max_distance=dist,
-        )
-        pyg_data["tx", "neighbors", "bd"].edge_index = nbrs_edge_idx
-
         # Set up Transcript-Transcript neighbor edges
-        nbrs_edge_idx = self.get_kdtree_edge_index(
+        nbrs_edge_idx, nbrs_dist = self.get_kdtree_edges(
             self.transcripts[self.settings.transcripts.xy],
             self.transcripts[self.settings.transcripts.xy],
             k=k_tx,
             max_distance=dist_tx,
         )
         pyg_data["tx", "neighbors", "tx"].edge_index = nbrs_edge_idx
+        pyg_data["tx", "neighbors", "tx"].edge_attr = nbrs_dist
 
         # Find nuclear transcripts
         tx_cell_ids = self.transcripts[self.settings.boundaries.id]
@@ -1220,6 +1238,7 @@ class STTile:
         # Add negative edges for training
         # Need more time-efficient solution than this
         edge_type = ('tx', 'belongs', 'bd')
+        print(self.extents.bounds)
         transform = RandomLinkSplit(
             num_val=0,
             num_test=0,

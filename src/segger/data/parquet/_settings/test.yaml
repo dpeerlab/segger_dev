@@ -1,0 +1,44 @@
+# To be used with test sample data in tests/data/simulated
+transcripts:
+  filename: "test_transcripts.parquet"
+  x: "x"
+  y: "y"
+  z: "z"
+  id: "tx_id"
+  boundary_id: "bd_id"
+  label: "label"
+  nuclear: "nuclear"
+  quality: "qv"
+  filter_substrings:
+    - "filter"
+  xy:
+    - "x"
+    - "y"
+  xyz: 
+    - "x"
+    - "y"
+    - "z"
+  columns: 
+    - "x"
+    - "y"
+    - "z"
+    - "tx_id"
+    - "bd_id"
+    - "label"
+    - "nuclear"
+    - "qv"
+  min_quality: 0
+
+boundaries:
+  filename: "test_boundaries.parquet"
+  x: "x"
+  y: "y"
+  id: "bd_id"
+  label: "bd_id"
+  xy: 
+    - "x"
+    - "y"
+  columns: 
+    - "x"
+    - "y"
+    - "bd_id"

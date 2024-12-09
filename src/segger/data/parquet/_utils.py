@@ -228,6 +228,7 @@ def filter_transcripts(
     label: Optional[str] = None,
     filter_substrings: Optional[List[str]] = None,
     min_qv: Optional[float] = None,
+    qv_col: str = 'qv',
 ) -> pd.DataFrame:
     """
     Filters transcripts based on quality value and removes unwanted transcripts.
@@ -242,6 +243,8 @@ def filter_transcripts(
         The list of feature substrings to remove.
     min_qv : Optional[float]
         The minimum quality value threshold for filtering transcripts.
+    qv_col: str
+        Column name of quality value for transcripts.
 
     Returns
     -------
@@ -252,7 +255,7 @@ def filter_transcripts(
     if filter_substrings is not None and label is not None:
         mask &= ~transcripts_df[label].str.startswith(tuple(filter_substrings))
     if min_qv is not None:
-        mask &= transcripts_df["qv"].ge(min_qv)
+        mask &= transcripts_df[qv_col].ge(min_qv)
     return transcripts_df[mask]
 
 def load_settings(sample_type: str) -> SimpleNamespace:

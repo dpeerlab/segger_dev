@@ -4,6 +4,7 @@ transcripts:
   y: "y_location"
   z: "z_location"
   id: "transcript_id"
+  boundary_id: "cell_id"
   label: "feature_name"
   nuclear: "overlaps_nucleus"
   filter_substrings:
@@ -29,6 +30,7 @@ transcripts:
     - "transcript_id"
     - "cell_id"
     - "qv"
+  min_quality: 30
 
 boundaries:
   filename: "nucleus_boundaries.parquet"
