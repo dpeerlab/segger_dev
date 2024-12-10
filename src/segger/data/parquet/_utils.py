@@ -200,7 +200,21 @@ def filter_boundaries(
         in_x = boundaries[x].between(region.bounds[0], region.bounds[2])
         in_y = boundaries[y].between(region.bounds[1], region.bounds[3])
         return in_x & in_y
+    # Filter boundary polygons
+    '''
+    # Include boundaries at least partially in inset and fully in outset
+    gb = boundaries.groupby(label, sort=False)
+    boundaries['inset'] = in_region(inset)
+    boundaries['outset'] = in_region(outset)
+    total = gb['inset'].transform('size')
+    in_inset = gb['inset'].transform('sum')
+    in_outset = gb['outset'].transform('sum')
+    keep = (in_outset == total) & (in_inset > 0)
+    filtered_boundaries = boundaries.loc[keep]
+    return filtered_boundaries
+    '''
     x1, y1, x4, y4 = outset.bounds
+    in_region(outset)
     x2, y2, x3, y3 = inset.bounds
     boundaries['top'] = in_region(shapely.box(x1, y1, x4, y2))
     boundaries['left'] = in_region(shapely.box(x1, y1, x2, y4))
@@ -218,10 +232,11 @@ def filter_boundaries(
     in_bottom = gb['bottom'].transform('sum')
     in_center = gb['center'].transform('sum')
     keep = in_center == total
-    keep |= ((in_center > 0) & (in_left > 0) & (in_bottom == 0))
-    keep |= ((in_center > 0) & (in_top > 0) & (in_right == 0))
+    keep |= ((in_center > 0) & (in_left > 0)) #& (in_bottom == 0))
+    keep |= ((in_center > 0) & (in_top > 0)) # & (in_right == 0))
     inset_boundaries = boundaries.loc[keep]
     return inset_boundaries
+
 
 def filter_transcripts(
     transcripts_df: pd.DataFrame,

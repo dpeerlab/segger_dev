@@ -1238,7 +1238,6 @@ class STTile:
         # Add negative edges for training
         # Need more time-efficient solution than this
         edge_type = ('tx', 'belongs', 'bd')
-        print(self.extents.bounds)
         transform = RandomLinkSplit(
             num_val=0,
             num_test=0,
