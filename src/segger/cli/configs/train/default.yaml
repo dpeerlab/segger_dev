@@ -1,79 +1,89 @@
 data_dir: 
   type: str
   required: true
-  help: "Path to the data loader directory"
+  help: "Path to the data loader directory."
 
 model_dir: 
   type: str
   required: true
-  help: "Root directory for logs and model checkpoints"
+  help: "Root directory for logs and model checkpoints."
 
 num_tx_tokens:
   type: int
   default: 500
-  help: "Number of unique tokens for transcript embedding"
+  help: "Number of unique tokens for transcript embedding."
 
 batch_size_train: 
   type: int
   default: 4
-  help: "Batch size for training"
+  help: "Batch size for training."
 
 batch_size_val: 
   type: int
   default: 4
-  help: "Batch size for validation"
+  help: "Batch size for validation."
 
 init_emb: 
   type: int
   default: 8
-  help: "Initial embedding size"
+  help: "Initial embedding size."
 
 hidden_channels: 
   type: int
   default: 32
-  help: "Number of hidden channels"
+  help: "Number of hidden channels."
 
 out_channels: 
   type: int
   default: 8
-  help: "Number of output channels"
+  help: "Number of output channels."
 
 heads: 
   type: int
   default: 2
-  help: "Number of attention heads"
+  help: "Number of attention heads."
 
 num_mid_layers: 
   type: int
   default: 2
-  help: "Number of hidden layers (excluding first and last)"
+  help: "Number of hidden layers (excluding first and last)."
 
 aggr: 
   type: str
   default: "sum"
-  help: "Aggregation method"
+  help: "Aggregation method."
 
 accelerator: 
   type: str
   default: "cuda"
-  help: "Type of accelerator"
+  help: "Type of accelerator."
 
 strategy: 
   type: str
   default: "auto"
-  help: "Training strategy"
+  help: "Training strategy."
 
 precision: 
   type: str
   default: "16-mixed"
-  help: "Precision mode"
+  help: "Precision mode."
 
 devices: 
   type: int
   default: 1
-  help: "Number of devices"
+  help: "Number of devices."
 
 epochs: 
   type: int
   default: 100
-  help: "Number of epochs"
+  help: "Number of epochs."
+
+max_k_tx:
+  type: int
+  default: null
+  help: "Max k-nearest neighbors to include in transcripts graph."
+
+max_dist_tx:
+  type: int
+  default: null
+  help: "Max distance between neighbors to include in transcripts graph."

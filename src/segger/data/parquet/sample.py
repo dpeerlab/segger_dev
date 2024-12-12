@@ -18,6 +18,7 @@ from torch_geometric.transforms import RandomLinkSplit
 import torch
 from pqdm.threads import pqdm
 import random
+from tqdm import tqdm
 from segger.data.parquet.transcript_embedding import TranscriptEmbedding
 
 
@@ -444,7 +445,7 @@ class STSampleParquet():
             outs = pqdm(regions, func, n_jobs=self.n_workers)
         else:
             outs = []
-            for region in regions:
+            for region in tqdm(regions):
                 outs.append(func(region))
         return outs
 
@@ -1015,7 +1016,7 @@ class STTile:
         edge_index = edge_index.long().contiguous()
         edge_index = EdgeIndex(
             edge_index,
-            sparse_size=idx.shape,
+            sparse_size=(idx.shape[0], idx.shape[0]),
             sort_order='row',
         )
         dist = torch.tensor(dist).flatten()
@@ -1218,8 +1219,10 @@ class STTile:
             k=k_tx,
             max_distance=dist_tx,
         )
-        pyg_data["tx", "neighbors", "tx"].edge_index = nbrs_edge_idx
-        pyg_data["tx", "neighbors", "tx"].edge_attr = nbrs_dist
+        edge_type = ("tx", "neighbors", "tx")
+        pyg_data[edge_type].edge_index = nbrs_edge_idx
+        pyg_data[edge_type].edge_attr = nbrs_dist
+        pyg_data[edge_type].k = k_tx
 
         # Find nuclear transcripts
         tx_cell_ids = self.transcripts[self.settings.boundaries.id]

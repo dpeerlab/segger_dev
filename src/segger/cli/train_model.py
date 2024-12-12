@@ -32,7 +32,9 @@ def train_model(args):
     dm = SeggerDataModule(
         data_dir=args.data_dir,
         batch_size=args.batch_size_train,
-        num_workers=1, 
+        num_workers=1,
+        k_tx=args.max_k_tx,
+        dist_tx=args.max_dist_tx,
     )
     logging.info("Done.")
 

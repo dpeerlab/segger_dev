@@ -82,3 +82,8 @@ mode:
   type: str
   default: "experimental"
   help: "Mode to use for creating dataset. Should be one of 'classic' or 'experimental'."
+
+parallel:
+  type: bool
+  default: true
+  help: "Whether to process dataset in parallel."

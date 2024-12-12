@@ -7,6 +7,7 @@ transcripts:
   boundary_id: "cell_id"
   label: "feature_name"
   nuclear: "overlaps_nucleus"
+  quality: "qv"
   filter_substrings:
     - "NegControlProbe_"
     - "antisense_"

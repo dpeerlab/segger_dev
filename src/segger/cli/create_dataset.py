@@ -104,5 +104,6 @@ def create_dataset(args: Namespace):
             frac=args.sampling_rate,
             val_prob=args.val_prob,
             test_prob=args.test_prob,
+            parallel=args.parallel,
         )
         logging.info("Dataset saved successfully.")
