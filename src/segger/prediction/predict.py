@@ -6,7 +6,8 @@ import numpy as np
 import torch.nn.functional as F
 import torch._dynamo
 import gc
-import rmm
+
+# import rmm
 import re
 import glob
 from pathlib import Path
@@ -28,7 +29,8 @@ from dask import delayed
 from dask.diagnostics import ProgressBar
 import time
 import dask
-from rmm.allocators.cupy import rmm_cupy_allocator
+
+# from rmm.allocators.cupy import rmm_cupy_allocator
 from cupyx.scipy.sparse import coo_matrix
 from torch.utils.dlpack import to_dlpack, from_dlpack
 
@@ -271,7 +273,9 @@ def predict_batch(
                 row_cpu = scores_tx.row.get()  # Transfer row indices to CPU (NumPy)
                 col_cpu = scores_tx.col.get()  # Transfer column indices to CPU (NumPy)
                 # Remove from memory
-                scores_tx = get_similarity_scores(lit_segger.model, batch, "tx", "tx", receptive_field)
+                scores_tx = get_similarity_scores(
+                    lit_segger.model, batch, "tx", "tx", receptive_field, knn_method=knn_method
+                )
                 # Convert to dense NumPy array
                 data_cpu = scores_tx.data.get()  # Transfer data to CPU (NumPy)
                 row_cpu = scores_tx.row.get()  # Transfer row indices to CPU (NumPy)

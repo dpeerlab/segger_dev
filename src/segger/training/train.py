@@ -4,10 +4,6 @@ import torch.nn.functional as F
 import torchmetrics
 from torchmetrics import F1Score
 import lightning as L
-from torch_geometric.loader import DataLoader
-from torch_geometric.typing import Metadata
-from torch_geometric.nn import to_hetero
-from torch_geometric.data import HeteroData
 from segger.models.segger_model import *
 from segger.data.utils import SpatialTranscriptomicsDataset
 from typing import Any, List, Tuple, Union
@@ -29,12 +25,14 @@ class LitSegger(LightningModule):
         The loss function used for training, specifically BCEWithLogitsLoss.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, learning_rate: float = 1e-3, **kwargs):
         """
         Initializes the LitSegger module with the given parameters.
 
         Parameters
         ----------
+        learning_rate : float
+            The learning rate for the optimizer.
         **kwargs : dict
             Keyword arguments for initializing the module. Specific parameters
             depend on whether the module is initialized with new parameters or components.
@@ -59,25 +57,26 @@ class LitSegger(LightningModule):
 
         self.validation_step_outputs = []
         self.criterion = torch.nn.BCEWithLogitsLoss()
+        self.learning_rate = learning_rate
 
     def from_new(
         self,
-        num_tx_tokens: int,
+        num_node_features: dict[str, int],
         init_emb: int,
         hidden_channels: int,
         out_channels: int,
         heads: int,
         num_mid_layers: int,
         aggr: str,
-        metadata: Union[Tuple, Metadata],
+        is_token_based: bool = True,
     ):
         """
         Initializes the LitSegger module with new parameters.
 
         Parameters
         ----------
-        num_tx_tokens : int
-            Number of unique 'tx' tokens for embedding (this must be passed here).
+        num_node_features : dict[str, int]
+            Number of node features for each node type.
         init_emb : int
             Initial embedding size.
         hidden_channels : int
@@ -86,25 +85,23 @@ class LitSegger(LightningModule):
             Number of output channels.
         heads : int
             Number of attention heads.
-        aggr : str
-            Aggregation method for heterogeneous graph conversion.
         num_mid_layers: int
             Number of hidden layers (excluding first and last layers).
-        metadata : Union[Tuple, Metadata]
-            Metadata for heterogeneous graph structure.
+        aggr : str
+            Aggregation method for heterogeneous graph conversion.
+        is_token_based : bool
+            Whether the model is using token-based embeddings or scRNAseq embeddings.
         """
         # Create the Segger model (ensure num_tx_tokens is passed here)
-        model = Segger(
-            num_tx_tokens=num_tx_tokens,  # This is required and must be passed here
+        self.model = Segger(
+            num_node_features=num_node_features,
             init_emb=init_emb,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
             heads=heads,
             num_mid_layers=num_mid_layers,
+            is_token_based=is_token_based,
         )
-        # Convert model to handle heterogeneous graphs
-        model = to_hetero(model, metadata=metadata, aggr=aggr)
-        self.model = model
         # Save hyperparameters
         self.save_hyperparameters()
 
@@ -134,7 +131,8 @@ class LitSegger(LightningModule):
             The output of the model.
         """
         z = self.model(batch.x_dict, batch.edge_index_dict)
-        output = torch.matmul(z["tx"], z["bd"].t())  # Example for bipartite graph
+        edge_label_index = batch["tx", "belongs", "bd"].edge_label_index
+        output = self.model.decode(z, edge_label_index)
         return output
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
@@ -153,17 +151,16 @@ class LitSegger(LightningModule):
         torch.Tensor
             The loss value for the current training step.
         """
-        # Forward pass to get the logits
-        z = self.model(batch.x_dict, batch.edge_index_dict)
-        output = torch.matmul(z["tx"], z["bd"].t())
-
-        # Get edge labels and logits
+        # Get edge labels
         edge_label_index = batch["tx", "belongs", "bd"].edge_label_index
-        out_values = output[edge_label_index[0], edge_label_index[1]]
         edge_label = batch["tx", "belongs", "bd"].edge_label
 
+        # Forward pass to get the logits
+        z = self.model(batch.x_dict, batch.edge_index_dict)
+        output = self.model.decode(z, edge_label_index)
+
         # Compute binary cross-entropy loss with logits (no sigmoid here)
-        loss = self.criterion(out_values, edge_label)
+        loss = self.criterion(output, edge_label)
 
         # Log the training loss
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
@@ -185,20 +182,19 @@ class LitSegger(LightningModule):
         torch.Tensor
             The loss value for the current validation step.
         """
-        # Forward pass to get the logits
-        z = self.model(batch.x_dict, batch.edge_index_dict)
-        output = torch.matmul(z["tx"], z["bd"].t())
-
-        # Get edge labels and logits
+        # Get edge labels
         edge_label_index = batch["tx", "belongs", "bd"].edge_label_index
-        out_values = output[edge_label_index[0], edge_label_index[1]]
         edge_label = batch["tx", "belongs", "bd"].edge_label
 
+        # Forward pass to get the logits
+        z = self.model(batch.x_dict, batch.edge_index_dict)
+        output = self.model.decode(z, edge_label_index)
+
         # Compute binary cross-entropy loss with logits (no sigmoid here)
-        loss = self.criterion(out_values, edge_label)
+        loss = self.criterion(output, edge_label)
 
         # Apply sigmoid to logits for AUROC and F1 metrics
-        out_values_prob = torch.sigmoid(out_values)
+        out_values_prob = torch.sigmoid(output)
 
         # Compute metrics
         auroc = torchmetrics.AUROC(task="binary")
@@ -223,5 +219,5 @@ class LitSegger(LightningModule):
         torch.optim.Optimizer
             The optimizer for training.
         """
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer

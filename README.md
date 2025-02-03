@@ -2,6 +2,8 @@
 
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/EliHei2/segger_dev/main.svg)](https://results.pre-commit.ci/latest/github/EliHei2/segger_dev/main)
 
+**Important note (Dec 2024)**: As segger is currently undergoing constant development, we highly recommend installing it directly via GitHub.
+
 **segger** is a cutting-edge tool for **cell segmentation** in **single-molecule spatial omics** datasets. By leveraging **graph neural networks (GNNs)** and heterogeneous graphs, segger offers unmatched accuracy and scalability.
 
 # How segger Works
@@ -47,42 +49,9 @@ segger tackles these with a **graph-based approach**, achieving superior segment
 
 ---
 
-## Installation Options
+## Installation
 
-### Important: PyTorch Geometric Dependencies
-
-Segger **relies heavily** on PyTorch Geometric for its graph-based operations. One **must** install its dependencies (such as `torch-sparse` and `torch-scatter`) based on their system’s specifications, especially the **CUDA** and **PyTorch** versions.
-
-Please follow the official [PyTorch Geometric Installation Guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) to install the correct versions of `torch-sparse`, `torch-scatter`, and other relevant libraries.
-
-Below is a quick guide for installing PyTorch Geometric dependencies for **torch 2.4.0**:
-
-#### For CUDA 11.x:
-
-```bash
-pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
-```
-
-#### For CUDA 12.x:
-
-```bash
-pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu118.html
-```
-
-Afterwards choose the installation method that best suits your needs.
-
-### Micromamba Installation
-
-To set up Segger with `micromamba` and install the required dependencies, use the following commands:
-
-```bash
-micromamba create -n segger-rapids --channel-priority 1 \
-    -c rapidsai -c conda-forge -c nvidia -c pytorch -c pyg \
-    rapids=24.08 python=3.* 'cuda-version>=11.4,<=11.8' jupyterlab \
-    'pytorch=*=*cuda*' 'pyg=*=*cu118' pyg-lib pytorch-sparse
-micromamba install -n segger-rapids --channel-priority 1 --file mamba_environment.yml
-micromamba run -n segger-rapids pip install --no-deps ./
-```
+**Important note (Dec 2024)**: As segger is currently undergoing constant development, we highly recommend installing it directly via GitHub.
 
 ### GitHub Installation
 
@@ -91,42 +60,24 @@ For a straightforward local installation from GitHub, clone the repository and i
 ```bash
 git clone https://github.com/EliHei2/segger_dev.git
 cd segger_dev
-pip install -e "."
+pip install -e ".[cuda12]"
 ```
 
-#### Pip Installation (RAPIDS and CUDA 11)
-
-For installations requiring RAPIDS and CUDA 11 support, run:
-
-```bash
-pip install -e ".[rapids11]"
-```
-
-#### Pip Installation (RAPIDS and CUDA 12)
-
-For installations requiring RAPIDS and CUDA 12 support, run:
-
-```bash
-pip install -e ".[rapids12]"
-```
+segger requires **CUDA 11** or **CUDA 12** for GPU acceleration.
+You can find more detailed information in our **[Installation Guide](https://elihei2.github.io/segger_dev/installation/)**.
+To avoid dependency conflicts, we recommend installing segger in a virtual environment or using a containerized environment.
 
 ### Docker Installation
 
-Segger provides an easy-to-use Docker container for those who prefer a containerized environment. To pull the latest Docker image:
+We provide an easy-to-use Docker container for those who prefer a containerized environment. To pull and run the Docker image:
 
 ```bash
-docker pull danielunyi42/segger_dev:latest
+docker pull danielunyi42/segger_dev:cuda121
+docker run --gpus all -it danielunyi42/segger_dev:cuda121
 ```
 
-The Docker image comes with all dependencies packaged, including RAPIDS. It currently supports only CUDA 12.2, and we will soon release a version that supports CUDA 11.8.
-
-### Singularity Installation
-
-For users who prefer Singularity, you can pull the Docker image as follows:
-
-```bash
-singularity pull docker://danielunyi42/segger_dev:latest
-```
+The official Docker image comes with all dependencies pre-installed, including the CUDA toolkit, PyTorch, and CuPy.
+The current images support **CUDA 11.8** and **CUDA 12.1**, which can be specified in the image tag.
 
 ---
 

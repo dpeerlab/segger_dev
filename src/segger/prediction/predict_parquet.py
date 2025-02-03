@@ -6,18 +6,19 @@ import numpy as np
 import torch.nn.functional as F
 import torch._dynamo
 import gc
-import rmm
+
+# import rmm
 import re
 import glob
 from pathlib import Path
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 from segger.data.utils import (
-    get_edge_index_cuda,
     get_edge_index,
     format_time,
     create_anndata,
     coo_to_dense_adj,
+    filter_transcripts
 )
 from segger.training.train import LitSegger
 from segger.training.segger_data_module import SeggerDataModule
@@ -30,7 +31,8 @@ from dask import delayed
 from dask.diagnostics import ProgressBar
 import time
 import dask
-from rmm.allocators.cupy import rmm_cupy_allocator
+
+# from rmm.allocators.cupy import rmm_cupy_allocator
 from cupyx.scipy.sparse import coo_matrix
 from torch.utils.dlpack import to_dlpack, from_dlpack
 
@@ -187,7 +189,7 @@ def get_similarity_scores(
     to_type: str,
     receptive_field: dict,
     compute_sigmoid: bool = True,
-    knn_method: str = "cuda",
+    knn_method: str = "kd_tree",
     gpu_id: int = 0,  # Added argument for GPU ID
 ) -> coo_matrix:
     """
@@ -215,19 +217,24 @@ def get_similarity_scores(
         # Step 1: Get embeddings from the model (on GPU)
         shape = batch[from_type].x.shape[0], batch[to_type].x.shape[0]
 
+        if from_type == to_type:
+            coords_1 = coords_2 = batch[to_type].pos
+        else:
+            coords_1 = batch[to_type].pos[:, :2]  # 'tx' positions
+            coords_2 = batch[from_type].pos[:, :2]
         if knn_method == "kd_tree":
             # Compute edge indices using knn method (still on GPU)
             edge_index = get_edge_index(
-                batch[to_type].pos[:, :2].cpu(),  # 'tx' positions
-                batch[from_type].pos[:, :2].cpu(),  # 'bd' positions
+                coords_1.cpu(),
+                coords_2.cpu(),
                 k=receptive_field[f"k_{to_type}"],
                 dist=receptive_field[f"dist_{to_type}"],
                 method=knn_method,
             )
         else:
             edge_index = get_edge_index(
-                batch[to_type].pos[:, :2],  # 'tx' positions
-                batch[from_type].pos[:, :2],  # 'bd' positions
+                coords_1,
+                coords_2,
                 k=receptive_field[f"k_{to_type}"],
                 dist=receptive_field[f"dist_{to_type}"],
                 method=knn_method,
@@ -237,7 +244,15 @@ def get_similarity_scores(
         edge_index = coo_to_dense_adj(edge_index.T, num_nodes=shape[0], num_nbrs=receptive_field[f"k_{to_type}"])
 
         with torch.no_grad():
-            embeddings = model(batch.x_dict, batch.edge_index_dict)
+            if from_type != to_type:
+                embeddings = model(batch.x_dict, batch.edge_index_dict)
+            else:  # to go with the inital embeddings for tx-tx
+                embeddings = {key: model.node_init[key](x) for key, x in batch.x_dict.items()}
+                norms = embeddings[to_type].norm(dim=1, keepdim=True)
+                # Avoid division by zero in case there are zero vectors
+                norms = torch.where(norms == 0, torch.ones_like(norms), norms)
+                # Normalize
+                embeddings[to_type] = embeddings[to_type] / norms
 
         def sparse_multiply(embeddings, edge_index, shape) -> coo_matrix:
             m = torch.nn.ZeroPad2d((0, 0, 0, 1))  # pad bottom with zeros
@@ -313,7 +328,7 @@ def predict_batch(
         transcript_id = batch["tx"].id.cpu().numpy().astype("str")
         assignments = {"transcript_id": transcript_id}
 
-        if len(batch["bd"].pos) >= 10:
+        if len(batch["bd"].pos) >= 10 and len(batch["tx"].pos) >= 1000:
             # Step 1: Compute similarity scores between 'tx' (transcripts) and 'bd' (boundaries)
             scores = get_similarity_scores(
                 lit_segger.model, batch, "tx", "bd", receptive_field, knn_method=knn_method, gpu_id=gpu_id
@@ -343,7 +358,14 @@ def predict_batch(
             # Step 3: Handle unassigned transcripts with connected components (if use_cc=True)
             if use_cc:
                 scores_tx = get_similarity_scores(
-                    lit_segger.model, batch, "tx", "tx", receptive_field, compute_sigmoid = False, knn_method=knn_method, gpu_id=gpu_id
+                    lit_segger.model,
+                    batch,
+                    "tx",
+                    "tx",
+                    receptive_field,
+                    compute_sigmoid=False,
+                    knn_method=knn_method,
+                    gpu_id=gpu_id,
                 )
 
                 # Stay on GPU and use CuPy sparse matrices
@@ -398,7 +420,7 @@ def predict_batch(
             # Step 4: Convert assignments to Dask-CuDF DataFrame for this batch
             # batch_ddf = dask_cudf.from_cudf(cudf.DataFrame(assignments), npartitions=1)
             assignments = pd.DataFrame(assignments)
-            assignments = assignments[assignments['bound'] == 1]
+            assignments = assignments[assignments["bound"] == 1]
             batch_ddf = delayed(dd.from_pandas)(assignments, npartitions=1)
 
             # Save the updated `output_ddf` asynchronously using Dask delayed
@@ -516,128 +538,128 @@ def segment(
         print(f"Batch processing completed in {elapsed_time:.2f} seconds.")
 
     seg_final_dd = pd.read_parquet(output_ddf_save_path)
-    seg_final_dd = seg_final_dd.set_index("transcript_id")
-    
+
     step_start_time = time()
     if verbose:
         print(f"Applying max score selection logic...")
+    output_ddf_save_path = save_dir / "transcripts_df.parquet"
     
-    # Step 1: Find max bound indices (bound == 1) and max unbound indices (bound == 0)
-    max_bound_idx = seg_final_dd[seg_final_dd["bound"] == 1].groupby("transcript_id")["score"].idxmax()
-    max_unbound_idx = seg_final_dd[seg_final_dd["bound"] == 0].groupby("transcript_id")["score"].idxmax()
     
-    # Step 2: Combine indices, prioritizing bound=1 scores
-    final_idx = max_bound_idx.combine_first(max_unbound_idx)
+    seg_final_dd = pd.read_parquet(output_ddf_save_path)
     
-    # Step 3: Use the computed final_idx to select the best assignments
-    # Make sure you are using the divisions and set the index correctly before loc
-    seg_final_filtered = seg_final_dd.loc[final_idx]
-    
+    seg_final_filtered = seg_final_dd.sort_values(
+        "score", ascending=False
+    ).drop_duplicates(subset="transcript_id", keep="first")
+
     if verbose:
         elapsed_time = time() - step_start_time
         print(f"Max score selection completed in {elapsed_time:.2f} seconds.")
-    
+
     # Step 3: Load the transcripts DataFrame and merge results
-    
+
     if verbose:
         print(f"Loading transcripts from {transcript_file}...")
-    
+
     transcripts_df = pd.read_parquet(transcript_file)
     transcripts_df["transcript_id"] = transcripts_df["transcript_id"].astype(str)
-    
+
     step_start_time = time()
     if verbose:
         print(f"Merging segmentation results with transcripts...")
-    
+
     # Outer merge to include all transcripts, even those without assigned cell ids
     transcripts_df_filtered = transcripts_df.merge(seg_final_filtered, on="transcript_id", how="outer")
     
     if verbose:
         elapsed_time = time() - step_start_time
         print(f"Merged segmentation results with transcripts in {elapsed_time:.2f} seconds.")
-    
-    step_start_time = time()
-    if verbose:
-        print(f"Computing connected components for unassigned transcripts...")
-    # Load edge indices from saved Parquet
-    edge_index_dd = pd.read_parquet(edge_index_save_path)
-    
-    # Step 2: Get unique transcript_ids from edge_index_dd and their positional indices
-    transcript_ids_in_edges = pd.concat([edge_index_dd["source"], edge_index_dd["target"]]).unique()
-    
-    # Create a lookup table with unique indices
-    lookup_table = pd.Series(data=range(len(transcript_ids_in_edges)), index=transcript_ids_in_edges).to_dict()
-    
-    # Map source and target to positional indices
-    edge_index_dd["index_source"] = edge_index_dd["source"].map(lookup_table)
-    edge_index_dd["index_target"] = edge_index_dd["target"].map(lookup_table)
-    # Step 3: Compute connected components for transcripts involved in edges
-    source_indices = np.asarray(edge_index_dd["index_source"])
-    target_indices = np.asarray(edge_index_dd["index_target"])
-    data_cp = np.ones(len(source_indices), dtype=np.float32)
-    
-    # Create the sparse COO matrix
-    coo_cp_matrix = scipy_coo_matrix(
-        (data_cp, (source_indices, target_indices)),
-        shape=(len(transcript_ids_in_edges), len(transcript_ids_in_edges)),
-    )
-    
-    # Use CuPy's connected components algorithm to compute components
-    n, comps = cc(coo_cp_matrix, directed=True, connection="strong")
-    if verbose:
-        elapsed_time = time() - step_start_time
-        print(f"Computed connected components for unassigned transcripts in {elapsed_time:.2f} seconds.")
-    
-    step_start_time = time()
-    if verbose:
-        print(f"The rest...")
-    # # Step 4: Map back the component labels to the original transcript_ids
-    
-    def _get_id():
-        """Generate a random Xenium-style ID."""
-        return "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz"), 8)) + "-nx"
-    
-    new_ids = np.array([_get_id() for _ in range(n)])
-    comp_labels = new_ids[comps]
-    comp_labels = pd.Series(comp_labels, index=transcript_ids_in_edges)
-    # Step 5: Handle only unassigned transcripts in transcripts_df_filtered
-    unassigned_mask = transcripts_df_filtered["segger_cell_id"].isna()
-    
-    unassigned_transcripts_df = transcripts_df_filtered.loc[unassigned_mask, ["transcript_id"]]
-    
-    # Step 6: Map component labels only to unassigned transcript_ids
-    new_segger_cell_ids = unassigned_transcripts_df["transcript_id"].map(comp_labels)
-    
-    # Step 7: Create a DataFrame with updated 'segger_cell_id' for unassigned transcripts
-    unassigned_transcripts_df = unassigned_transcripts_df.assign(segger_cell_id=new_segger_cell_ids)
-    
-    # Step 8: Merge this DataFrame back into the original to update only the unassigned segger_cell_id
-    
-    # Merging the updates back to the original DataFrame
-    transcripts_df_filtered = transcripts_df_filtered.merge(
-        unassigned_transcripts_df[["transcript_id", "segger_cell_id"]],
-        on="transcript_id",
-        how="left",  # Perform a left join to only update the unassigned rows
-        suffixes=("", "_new"),  # Suffix for new column to avoid overwriting
-    )
-    
-    # Step 9: Fill missing segger_cell_id values with the updated values from the merge
-    transcripts_df_filtered["segger_cell_id"] = transcripts_df_filtered["segger_cell_id"].fillna(
-        transcripts_df_filtered["segger_cell_id_new"]
-    )
 
-    transcripts_df_filtered = transcripts_df_filtered.drop(columns=["segger_cell_id_new"])
-    
-    if verbose:
-        elapsed_time = time() - step_start_time
-        print(f"The rest computed in {elapsed_time:.2f} seconds.")
+    if use_cc:
+
+        step_start_time = time()
+        if verbose:
+            print(f"Computing connected components for unassigned transcripts...")
+        # Load edge indices from saved Parquet
+        edge_index_dd = pd.read_parquet(edge_index_save_path)
+
+        # Step 2: Get unique transcript_ids from edge_index_dd and their positional indices
+        transcript_ids_in_edges = pd.concat([edge_index_dd["source"], edge_index_dd["target"]]).unique()
+
+        # Create a lookup table with unique indices
+        lookup_table = pd.Series(data=range(len(transcript_ids_in_edges)), index=transcript_ids_in_edges).to_dict()
+
+        # Map source and target to positional indices
+        edge_index_dd["index_source"] = edge_index_dd["source"].map(lookup_table)
+        edge_index_dd["index_target"] = edge_index_dd["target"].map(lookup_table)
+        # Step 3: Compute connected components for transcripts involved in edges
+        source_indices = np.asarray(edge_index_dd["index_source"])
+        target_indices = np.asarray(edge_index_dd["index_target"])
+        data_cp = np.ones(len(source_indices), dtype=np.float32)
+
+        # Create the sparse COO matrix
+        coo_cp_matrix = scipy_coo_matrix(
+            (data_cp, (source_indices, target_indices)),
+            shape=(len(transcript_ids_in_edges), len(transcript_ids_in_edges)),
+        )
+
+        # Use CuPy's connected components algorithm to compute components
+        n, comps = cc(coo_cp_matrix, directed=True, connection="strong")
+        if verbose:
+            elapsed_time = time() - step_start_time
+            print(f"Computed connected components for unassigned transcripts in {elapsed_time:.2f} seconds.")
+
+        step_start_time = time()
+        if verbose:
+            print(f"The rest...")
+        # # Step 4: Map back the component labels to the original transcript_ids
+
+        def _get_id():
+            """Generate a random Xenium-style ID."""
+            return "".join(np.random.choice(list("abcdefghijklmnopqrstuvwxyz"), 8)) + "-nx"
+
+        new_ids = np.array([_get_id() for _ in range(n)])
+        comp_labels = new_ids[comps]
+        comp_labels = pd.Series(comp_labels, index=transcript_ids_in_edges)
+        # Step 5: Handle only unassigned transcripts in transcripts_df_filtered
+        unassigned_mask = transcripts_df_filtered["segger_cell_id"].isna()
+
+        unassigned_transcripts_df = transcripts_df_filtered.loc[unassigned_mask, ["transcript_id"]]
+
+        # Step 6: Map component labels only to unassigned transcript_ids
+        new_segger_cell_ids = unassigned_transcripts_df["transcript_id"].map(comp_labels)
+
+        # Step 7: Create a DataFrame with updated 'segger_cell_id' for unassigned transcripts
+        unassigned_transcripts_df = unassigned_transcripts_df.assign(segger_cell_id=new_segger_cell_ids)
+
+        # Step 8: Merge this DataFrame back into the original to update only the unassigned segger_cell_id
+
+        # Merging the updates back to the original DataFrame
+        transcripts_df_filtered = transcripts_df_filtered.merge(
+            unassigned_transcripts_df[["transcript_id", "segger_cell_id"]],
+            on="transcript_id",
+            how="left",  # Perform a left join to only update the unassigned rows
+            suffixes=("", "_new"),  # Suffix for new column to avoid overwriting
+        )
+
+        # Step 9: Fill missing segger_cell_id values with the updated values from the merge
+        transcripts_df_filtered["segger_cell_id"] = transcripts_df_filtered["segger_cell_id"].fillna(
+            transcripts_df_filtered["segger_cell_id_new"]
+        )
+
+        transcripts_df_filtered = transcripts_df_filtered.drop(columns=["segger_cell_id_new"])
+
+        if verbose:
+            elapsed_time = time() - step_start_time
+            print(f"The rest computed in {elapsed_time:.2f} seconds.")
 
     # Step 5: Save the merged results based on options
+    transcripts_df_filtered["segger_cell_id"] = transcripts_df_filtered["segger_cell_id"].fillna("UNASSIGNED")
+    # transcripts_df_filtered = filter_transcripts(transcripts_df_filtered, qv=qv)
 
     if save_transcripts:
         if verbose:
             step_start_time = time()
-            print(f"Saving transcirpts.parquet...")
+            print(f"Saving transcripts.parquet...")
         transcripts_save_path = save_dir / "segger_transcripts.parquet"
         # transcripts_df_filtered = transcripts_df_filtered.repartition(npartitions=100)
         transcripts_df_filtered.to_parquet(

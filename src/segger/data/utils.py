@@ -32,19 +32,18 @@ import sys
 # Attempt to import specific modules with try_import function
 try_import("multiprocessing")
 try_import("joblib")
-try_import("faiss")
-try_import("cuvs")
-try:
-    import cupy as cp
-    from cuvs.neighbors import cagra
-except ImportError:
-    print(f"Warning: cupy and/or cuvs are not installed. Please install them to use this functionality.")
+# try_import("cuvs")
+# try:
+#     import cupy as cp
+#     from cuvs.neighbors import cagra
+# except ImportError:
+#     print(f"Warning: cupy and/or cuvs are not installed. Please install them to use this functionality.")
 
 import torch.utils.dlpack as dlpack
 from datetime import timedelta
 
 
-def filter_transcripts(
+def filter_transcripts( #ONLY FOR XENIUM
     transcripts_df: pd.DataFrame,
     min_qv: float = 20.0,
 ) -> pd.DataFrame:
@@ -66,8 +65,17 @@ def filter_transcripts(
         "DeprecatedCodeword_",
         "UnassignedCodeword_",
     )
-    mask = transcripts_df["qv"].ge(min_qv)
-    mask &= ~transcripts_df["feature_name"].str.startswith(filter_codewords)
+    
+    transcripts_df['feature_name'] = transcripts_df['feature_name'].apply(
+        lambda x: x.decode("utf-8") if isinstance(x, bytes) else x
+    )
+    mask_quality = transcripts_df['qv'] >= min_qv
+
+    # Apply the filter for unwanted codewords using Dask string functions
+    mask_codewords = ~transcripts_df['feature_name'].str.startswith(filter_codewords)
+
+    # Combine the filters and return the filtered Dask DataFrame
+    mask = mask_quality & mask_codewords
     return transcripts_df[mask]
 
 
@@ -144,14 +152,16 @@ def create_anndata(
     Returns:
         ad.AnnData: The generated AnnData object containing the transcriptomics data and metadata.
     """
-    # df_filtered = filter_transcripts(df, min_qv=qv_threshold)
-    df_filtered = df
-    # metrics = compute_transcript_metrics(df_filtered, qv_threshold, cell_id_col)
-    df_filtered = df_filtered[df_filtered[cell_id_col].astype(str) != "-1"]
+    # Filter out unassigned cells
+    df_filtered = df[df[cell_id_col].astype(str) != "UNASSIGNED"]
+
+    # Create pivot table for gene expression counts per cell
     pivot_df = df_filtered.rename(columns={cell_id_col: "cell", "feature_name": "gene"})[["cell", "gene"]].pivot_table(
         index="cell", columns="gene", aggfunc="size", fill_value=0
     )
     pivot_df = pivot_df[pivot_df.sum(axis=1) >= min_transcripts]
+
+    # Summarize cell metrics
     cell_summary = []
     for cell_id, cell_data in df_filtered.groupby(cell_id_col):
         if len(cell_data) < min_transcripts:
@@ -160,28 +170,17 @@ def create_anndata(
         cell_area = cell_convex_hull.area
         if cell_area < min_cell_area or cell_area > max_cell_area:
             continue
-        # if 'nucleus_distance' in cell_data:
-        #     nucleus_data = cell_data[cell_data['nucleus_distance'] == 0]
-        # else:
-        #     nucleus_data = cell_data[cell_data['overlaps_nucleus'] == 1]
-        # if len(nucleus_data) >= 3:
-        #     nucleus_convex_hull = ConvexHull(nucleus_data[['x_location', 'y_location']])
-        # else:
-        #     nucleus_convex_hull = None
         cell_summary.append(
             {
                 "cell": cell_id,
                 "cell_centroid_x": cell_data["x_location"].mean(),
                 "cell_centroid_y": cell_data["y_location"].mean(),
                 "cell_area": cell_area,
-                # "nucleus_centroid_x": nucleus_data['x_location'].mean() if len(nucleus_data) > 0 else cell_data['x_location'].mean(),
-                # "nucleus_centroid_y": nucleus_data['x_location'].mean() if len(nucleus_data) > 0 else cell_data['x_location'].mean(),
-                # "nucleus_area": nucleus_convex_hull.area if nucleus_convex_hull else 0,
-                # "percent_cytoplasmic": len(cell_data[cell_data['overlaps_nucleus'] != 1]) / len(cell_data) * 100,
-                # "has_nucleus": len(nucleus_data) > 0
             }
         )
     cell_summary = pd.DataFrame(cell_summary).set_index("cell")
+
+    # Add genes from panel_df (if provided) to the pivot table
     if panel_df is not None:
         panel_df = panel_df.sort_values("gene")
         genes = panel_df["gene"].values
@@ -189,11 +188,13 @@ def create_anndata(
             if gene not in pivot_df:
                 pivot_df[gene] = 0
         pivot_df = pivot_df[genes.tolist()]
+
+    # Create var DataFrame
     if panel_df is None:
         var_df = pd.DataFrame(
             [
-                {"gene": i, "feature_types": "Gene Expression", "genome": "Unknown"}
-                for i in np.unique(pivot_df.columns.values)
+                {"gene": gene, "feature_types": "Gene Expression", "genome": "Unknown"}
+                for gene in np.unique(pivot_df.columns.values)
             ]
         ).set_index("gene")
     else:
@@ -201,8 +202,14 @@ def create_anndata(
         var_df["feature_types"] = "Gene Expression"
         var_df["genome"] = "Unknown"
         var_df = var_df.set_index("gene")
-    # gene_metrics = metrics['gene_metrics'].set_index('feature_name')
-    # var_df = var_df.join(gene_metrics, how='left').fillna(0)
+
+    # Compute total assigned and unassigned transcript counts for each gene
+    assigned_counts = df_filtered.groupby("feature_name")["feature_name"].count()
+    unassigned_counts = df[df[cell_id_col].astype(str) == "UNASSIGNED"].groupby("feature_name")["feature_name"].count()
+    var_df["total_assigned"] = var_df.index.map(assigned_counts).fillna(0).astype(int)
+    var_df["total_unassigned"] = var_df.index.map(unassigned_counts).fillna(0).astype(int)
+
+    # Filter cells and create the AnnData object
     cells = list(set(pivot_df.index) & set(cell_summary.index))
     pivot_df = pivot_df.loc[cells, :]
     cell_summary = cell_summary.loc[cells, :]
@@ -212,17 +219,12 @@ def create_anndata(
     adata.obs["unique_transcripts"] = (pivot_df > 0).sum(axis=1).values
     adata.obs_names = pivot_df.index.values.tolist()
     adata.obs = pd.merge(adata.obs, cell_summary.loc[adata.obs_names, :], left_index=True, right_index=True)
-    # adata.uns['metrics'] = {
-    #     'percent_assigned': metrics['percent_assigned'],
-    #     'percent_cytoplasmic': metrics['percent_cytoplasmic'],
-    #     'percent_nucleus': metrics['percent_nucleus'],
-    #     'percent_non_assigned_cytoplasmic': metrics['percent_non_assigned_cytoplasmic']
-    # }
+
     return adata
 
 
 def calculate_gene_celltype_abundance_embedding(adata: ad.AnnData, celltype_column: str) -> pd.DataFrame:
-    """Calculate the cell type abundance embedding for each gene based on the percentage of cells in each cell type
+    """Calculate the cell type abundance embedding for each gene based on the fraction of cells in each cell type
     that express the gene (non-zero expression).
 
     Parameters:
@@ -231,7 +233,7 @@ def calculate_gene_celltype_abundance_embedding(adata: ad.AnnData, celltype_colu
 
     Returns:
         pd.DataFrame: A DataFrame where rows are genes and columns are cell types, with each value representing
-            the percentage of cells in that cell type expressing the gene.
+            the fraction of cells in that cell type expressing the gene.
 
     Example:
         >>> adata = AnnData(...)  # Load your scRNA-seq AnnData object
@@ -249,13 +251,13 @@ def calculate_gene_celltype_abundance_embedding(adata: ad.AnnData, celltype_colu
     # Perform one-hot encoding on the cell types
     encoder = OneHotEncoder(sparse_output=False)
     cell_type_encoded = encoder.fit_transform(cell_types.reshape(-1, 1))
-    # Calculate the percentage of cells expressing each gene per cell type
+    # Calculate the fraction of cells expressing each gene per cell type
     cell_type_abundance_list = []
     for i in range(cell_type_encoded.shape[1]):
         # Extract cells of the current cell type
         cell_type_mask = cell_type_encoded[:, i] == 1
         # Calculate the abundance: sum of non-zero expressions in this cell type / total cells in this cell type
-        abundance = gene_expression_df[cell_type_mask].mean(axis=0) * 100
+        abundance = gene_expression_df[cell_type_mask].mean(axis=0)
         cell_type_abundance_list.append(abundance)
     # Create a DataFrame for the cell type abundance with gene names as rows and cell types as columns
     cell_type_abundance_df = pd.DataFrame(
@@ -270,33 +272,28 @@ def get_edge_index(
     k: int = 5,
     dist: int = 10,
     method: str = "kd_tree",
-    gpu: bool = False,
     workers: int = 1,
 ) -> torch.Tensor:
     """
-    Computes edge indices using various methods (KD-Tree, FAISS, RAPIDS::cuvs+cupy (cuda)).
+    Computes edge indices using KD-Tree.
 
     Parameters:
         coords_1 (np.ndarray): First set of coordinates.
         coords_2 (np.ndarray): Second set of coordinates.
         k (int, optional): Number of nearest neighbors.
         dist (int, optional): Distance threshold.
-        method (str, optional): The method to use ('kd_tree', 'faiss', 'cuda').
-        gpu (bool, optional): Whether to use GPU acceleration (applicable for FAISS).
+        method (str, optional): The method to use. Only 'kd_tree' is supported now.
 
     Returns:
         torch.Tensor: Edge indices.
     """
     if method == "kd_tree":
         return get_edge_index_kdtree(coords_1, coords_2, k=k, dist=dist, workers=workers)
-    elif method == "faiss":
-        return get_edge_index_faiss(coords_1, coords_2, k=k, dist=dist, gpu=gpu)
-    elif method == "cuda":
-        # pass
-        return get_edge_index_cuda(coords_1, coords_2, k=k, dist=dist)
+    # elif method == "cuda":
+    #     return get_edge_index_cuda(coords_1, coords_2, k=k, dist=dist)
     else:
-        msg = f"Unknown method {method}. Valid methods include: 'kd_tree', " "'faiss', and 'cuda'."
-        raise ValueError()
+        msg = f"Unknown method {method}. The only supported method is 'kd_tree' now."
+        raise ValueError(msg)
 
 
 def get_edge_index_kdtree(
@@ -314,6 +311,10 @@ def get_edge_index_kdtree(
     Returns:
         torch.Tensor: Edge indices.
     """
+    if isinstance(coords_1, torch.Tensor):
+        coords_1 = coords_1.cpu().numpy()
+    if isinstance(coords_2, torch.Tensor):
+        coords_2 = coords_2.cpu().numpy()
     tree = cKDTree(coords_1)
     d_kdtree, idx_out = tree.query(coords_2, k=k, distance_upper_bound=dist, workers=workers)
     valid_mask = d_kdtree < dist
@@ -328,104 +329,64 @@ def get_edge_index_kdtree(
     return edge_index
 
 
-def get_edge_index_faiss(
-    coords_1: np.ndarray, coords_2: np.ndarray, k: int = 5, dist: int = 10, gpu: bool = False
-) -> torch.Tensor:
-    """
-    Computes edge indices using FAISS.
+# def get_edge_index_cuda(
+#     coords_1: torch.Tensor,
+#     coords_2: torch.Tensor,
+#     k: int = 10,
+#     dist: float = 10.0,
+#     metric: str = "sqeuclidean",
+#     nn_descent_niter: int = 100,
+# ) -> torch.Tensor:
+#     """
+#     Computes edge indices using RAPIDS cuVS with cagra for vector similarity search,
+#     with input coordinates as PyTorch tensors on CUDA, using DLPack for conversion.
 
-    Parameters:
-        coords_1 (np.ndarray): First set of coordinates.
-        coords_2 (np.ndarray): Second set of coordinates.
-        k (int, optional): Number of nearest neighbors.
-        dist (int, optional): Distance threshold.
-        gpu (bool, optional): Whether to use GPU acceleration.
+#     Parameters:
+#         coords_1 (torch.Tensor): First set of coordinates (query vectors) on CUDA.
+#         coords_2 (torch.Tensor): Second set of coordinates (index vectors) on CUDA.
+#         k (int, optional): Number of nearest neighbors.
+#         dist (float, optional): Distance threshold.
 
-    Returns:
-        torch.Tensor: Edge indices.
-    """
-    coords_1 = np.ascontiguousarray(coords_1, dtype=np.float32)
-    coords_2 = np.ascontiguousarray(coords_2, dtype=np.float32)
-    d = coords_1.shape[1]
-    if gpu:
-        res = faiss.StandardGpuResources()
-        index = faiss.GpuIndexFlatL2(res, d)
-    else:
-        index = faiss.IndexFlatL2(d)
+#     Returns:
+#         torch.Tensor: Edge indices as a PyTorch tensor on CUDA.
+#     """
 
-    index.add(coords_1.astype("float32"))
-    D, I = index.search(coords_2.astype("float32"), k)
+#     def cupy_to_torch(cupy_array):
+#         return torch.from_dlpack((cupy_array.toDlpack()))
 
-    valid_mask = D < dist**2
-    edges = []
+#     # gg
+#     def torch_to_cupy(tensor):
+#         return cp.fromDlpack(dlpack.to_dlpack(tensor))
 
-    for idx, valid in enumerate(valid_mask):
-        valid_indices = I[idx][valid]
-        if valid_indices.size > 0:
-            edges.append(np.vstack((np.full(valid_indices.shape, idx), valid_indices)).T)
-
-    edge_index = torch.tensor(np.vstack(edges), dtype=torch.long).contiguous()
-    return edge_index
-
-
-def get_edge_index_cuda(
-    coords_1: torch.Tensor,
-    coords_2: torch.Tensor,
-    k: int = 10,
-    dist: float = 10.0,
-    metric: str = "sqeuclidean",
-    nn_descent_niter: int = 100,
-) -> torch.Tensor:
-    """
-    Computes edge indices using RAPIDS cuVS with cagra for vector similarity search,
-    with input coordinates as PyTorch tensors on CUDA, using DLPack for conversion.
-
-    Parameters:
-        coords_1 (torch.Tensor): First set of coordinates (query vectors) on CUDA.
-        coords_2 (torch.Tensor): Second set of coordinates (index vectors) on CUDA.
-        k (int, optional): Number of nearest neighbors.
-        dist (float, optional): Distance threshold.
-
-    Returns:
-        torch.Tensor: Edge indices as a PyTorch tensor on CUDA.
-    """
-
-    def cupy_to_torch(cupy_array):
-        return torch.from_dlpack((cupy_array.toDlpack()))
-
-    # gg
-    def torch_to_cupy(tensor):
-        return cp.fromDlpack(dlpack.to_dlpack(tensor))
-
-    # Convert PyTorch tensors (CUDA) to CuPy arrays using DLPack
-    cp_coords_1 = torch_to_cupy(coords_1).astype(cp.float32)
-    cp_coords_2 = torch_to_cupy(coords_2).astype(cp.float32)
-    # Define the distance threshold in CuPy
-    cp_dist = cp.float32(dist)
-    # IndexParams and SearchParams for cagra
-    # compression_params = cagra.CompressionParams(pq_bits=pq_bits)
-    index_params = cagra.IndexParams(
-        metric=metric, nn_descent_niter=nn_descent_niter
-    )  # , compression=compression_params)
-    search_params = cagra.SearchParams()
-    # Build index using CuPy coords
-    try:
-        index = cagra.build(index_params, cp_coords_1)
-    except AttributeError:
-        index = cagra.build_index(index_params, cp_coords_1)
-    # Perform search to get distances and indices (still in CuPy)
-    D, I = cagra.search(search_params, index, cp_coords_2, k)
-    # Boolean mask for filtering distances below the squared threshold (all in CuPy)
-    valid_mask = cp.asarray(D < cp_dist**2)
-    # Vectorized operations for row and valid indices (all in CuPy)
-    repeats = valid_mask.sum(axis=1).tolist()
-    row_indices = cp.repeat(cp.arange(len(cp_coords_2)), repeats)
-    valid_indices = cp.asarray(I)[cp.where(valid_mask)]
-    # Stack row indices with valid indices to form edges
-    edges = cp.vstack((row_indices, valid_indices)).T
-    # Convert the result back to a PyTorch tensor using DLPack
-    edge_index = cupy_to_torch(edges).long().contiguous()
-    return edge_index
+#     # Convert PyTorch tensors (CUDA) to CuPy arrays using DLPack
+#     cp_coords_1 = torch_to_cupy(coords_1).astype(cp.float32)
+#     cp_coords_2 = torch_to_cupy(coords_2).astype(cp.float32)
+#     # Define the distance threshold in CuPy
+#     cp_dist = cp.float32(dist)
+#     # IndexParams and SearchParams for cagra
+#     # compression_params = cagra.CompressionParams(pq_bits=pq_bits)
+#     index_params = cagra.IndexParams(
+#         metric=metric, nn_descent_niter=nn_descent_niter
+#     )  # , compression=compression_params)
+#     search_params = cagra.SearchParams()
+#     # Build index using CuPy coords
+#     try:
+#         index = cagra.build(index_params, cp_coords_1)
+#     except AttributeError:
+#         index = cagra.build_index(index_params, cp_coords_1)
+#     # Perform search to get distances and indices (still in CuPy)
+#     D, I = cagra.search(search_params, index, cp_coords_2, k)
+#     # Boolean mask for filtering distances below the squared threshold (all in CuPy)
+#     valid_mask = cp.asarray(D < cp_dist**2)
+#     # Vectorized operations for row and valid indices (all in CuPy)
+#     repeats = valid_mask.sum(axis=1).tolist()
+#     row_indices = cp.repeat(cp.arange(len(cp_coords_2)), repeats)
+#     valid_indices = cp.asarray(I)[cp.where(valid_mask)]
+#     # Stack row indices with valid indices to form edges
+#     edges = cp.vstack((row_indices, valid_indices)).T
+#     # Convert the result back to a PyTorch tensor using DLPack
+#     edge_index = cupy_to_torch(edges).long().contiguous()
+#     return edge_index
 
 
 class SpatialTranscriptomicsDataset(InMemoryDataset):
