@@ -153,7 +153,7 @@ def get_polygons_from_xy(
         coords=boundaries[[x, y]],
         offsets=(geometry_offset, part_offset),
     )
-    gs = gpd.GeoSeries(polygons, index=np.unique(ids))
+    gs = gpd.GeoSeries(polygons, index=pd.unique(ids))
     return gs
 
 def filter_boundaries(
