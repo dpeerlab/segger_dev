@@ -85,10 +85,12 @@ def create_dataset(args: Namespace):
             n_workers=args.n_workers,
             sample_type=args.sample_type,
         )
+        logging.info("Done.")
+        '''
         if args.gene_embedding_weights is not None:
             weights = pd.read_csv(args.gene_embedding_weights, index_col=0)
             sample.set_transcript_embedding(weights)
-        logging.info("Done.")
+        '''
 
         logging.info("Saving dataset for Segger...")
         outs = sample.save(

@@ -5,7 +5,7 @@ from typing import Optional
 from pathlib import Path
 from torchvision.transforms import Lambda
 from segger.data.parquet.pyg_dataset import STPyGDataset
-from segger.data.parquet._utils import MaskEdgeIndex
+from segger.data.parquet._utils import MaskEdgeIndex, Embed
 
 
 # TODO: Add documentation
@@ -25,7 +25,7 @@ class SeggerDataModule(LightningDataModule):
         self.num_workers = num_workers
         if k_tx or dist_tx:
             edge_type = 'tx', 'neighbors', 'tx'
-            self.transform = MaskEdgeIndex(edge_type, k_tx, dist_tx)
+            transform = MaskEdgeIndex(edge_type, k_tx, dist_tx)
         else:
             self.transform = None
 
