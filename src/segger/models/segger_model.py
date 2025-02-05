@@ -6,7 +6,15 @@ from typing import Union
 #from torch_sparse import SparseTensor
 
 class Segger(torch.nn.Module):
-    def __init__(self, num_tx_tokens: int, init_emb: int = 16, hidden_channels: int = 32, num_mid_layers: int = 3, out_channels: int = 32, heads: int = 3):
+    def __init__(
+        self,
+        num_tx_tokens: int,
+        init_emb: int = 16,
+        hidden_channels: int = 32,
+        num_mid_layers: int = 3,
+        out_channels: int = 32,
+        heads: int = 3
+    ):
         """
         Initializes the Segger model.
 
