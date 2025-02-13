@@ -65,9 +65,36 @@ class TranscriptEmbedding(torch.nn.Module):
 
     # TODO: Add documentation
     def embed(self, classes: ArrayLike):
-        indices = LongTensor(self._encoder.transform(classes))
-        # Default, one-hot encoding
+        """
+        Transforms input labels into embeddings or indices.
+        Unseen labels are mapped to a default index (-1).
+        """
+        indices = np.full(len(classes), -1, dtype=int)  # Default index for unseen labels
+        try:
+            valid_indices = self._encoder.transform(classes)
+            indices = LongTensor(valid_indices)
+        except ValueError:
+            # Map unseen labels to -1
+            valid_classes = set(self._encoder.classes_)
+            indices = LongTensor([self._encoder.transform([c])[0] if c in valid_classes else -1 for c in classes])
+
         if self._weights is None:
-            return indices #F.one_hot(indices, len(self._encoder.classes_))
+            return indices
         else:
             return F.embedding(indices, self._weights)
+    
+    def to_indices(self, classes: ArrayLike) -> LongTensor:
+        """
+        Returns a stable mapping of classes to indices.
+        """
+        indices = np.full(len(classes), -1, dtype=int)
+        try:
+            valid_indices = self._encoder.transform(classes)
+            indices = LongTensor(valid_indices)
+        except ValueError:
+            valid_classes = set(self._encoder.classes_)
+            indices = LongTensor([
+                self._encoder.transform([c])[0] if c in valid_classes else -1
+                for c in classes
+            ])
+        return indices
