@@ -12,3 +12,6 @@ def segger():
 segger.add_command(create_dataset)
 segger.add_command(train)
 segger.add_command(predict)
+
+if __name__ == "__main__":
+    segger()

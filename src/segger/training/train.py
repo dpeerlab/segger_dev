@@ -13,6 +13,7 @@ from segger.data.utils import SpatialTranscriptomicsDataset
 from typing import Any, List, Tuple, Union
 from pytorch_lightning import LightningModule
 import inspect
+import logging
 
 
 class LitSegger(LightningModule):
@@ -153,10 +154,43 @@ class LitSegger(LightningModule):
         edge_label = batch['tx', 'belongs', 'bd'].edge_label
         
         # Compute binary cross-entropy loss with logits (no sigmoid here)
-        loss = self.criterion(out_values, edge_label)
+        bce_loss = self.criterion(out_values, edge_label)
+        # Compute tile-level covaraince penalty
+        cov_penalty = 0.0
+        if not ('meta' in batch and 'global_gene_cov' in batch['meta']):
+            logging.warning("Tile gene covariance matrix not found in batch metadata. Proceeding without gene covariance in loss.")
         
+        if ('meta' in batch and 'global_gene_cov' in batch['meta']):
+                logging.info("Computing gene covariance penalty")
+                # Retrieve precomputed gene covariance matrix for this tile
+                gene_cov = batch['meta']['global_gene_cov'][0]  # Shape: [n_genes, n_genes]
+                    
+                logging.info("Computing gene embeddings")
+                num_genes = len(gene_cov)
+                gene_idx = batch['tx'].label
+
+                # count the number of transcripts per gene
+                logging.info("Counting transcripts per gene")
+                counts = torch.zeros(num_genes, device=gene_idx.device)
+                for tx, g_idx in enumerate(gene_idx):
+                    counts[g_idx] += 1
+
+                gene_cov_tensor = torch.tensor(gene_cov.values, dtype=torch.float32)
+
+                # Now extract the diagonal.
+                global_diag = gene_cov_tensor.diag().to(counts.device)
+
+                # Compute the error (penalty) as the norm of the difference between the observed counts and global_diag
+                cov_penalty = torch.norm(counts - global_diag)
+
+        loss = bce_loss + (cov_penalty * 0.01)
+
         # Log the training loss
-        self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+        # === 5) Logging ===
+        self.log("train_loss", bce_loss, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("cov_penalty", cov_penalty, prog_bar=True, batch_size=batch.num_graphs)
+        self.log("total_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
+
         return loss
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:

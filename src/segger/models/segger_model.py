@@ -19,7 +19,6 @@ class Segger(torch.nn.Module):
             heads (int)          : Number of attention heads.
         """
         super().__init__()
-
         # Embedding for 'tx' (transcript) nodes
         self.tx_embedding = Embedding(num_tx_tokens, init_emb)
 
@@ -57,13 +56,14 @@ class Segger(torch.nn.Module):
         x = torch.nan_to_num(x, nan = 0)
         is_one_dim = (x.ndim == 1) * 1
         x = x[:, None]    
-        x = self.tx_embedding(((x.sum(-1) * is_one_dim).int())) * is_one_dim + self.lin0(x.float())  * (1 - is_one_dim)
+        index = ((x.sum(-1) * is_one_dim).int())
+        index = index.clamp(0, self.tx_embedding.num_embeddings - 1)
+        x = self.tx_embedding(index) * is_one_dim + self.lin0(x.float())  * (1 - is_one_dim)
         x = x.squeeze()
         # First layer
         x = x.relu()
         x = self.conv_first(x, edge_index) # + self.lin_first(x)
         x = x.relu()
-
         # Middle layers
         if self.num_mid_layers > 0:
             for conv_mid in self.conv_mid_layers:   

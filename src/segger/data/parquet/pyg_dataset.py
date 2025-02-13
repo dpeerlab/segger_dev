@@ -3,19 +3,31 @@ from torch_geometric.data import InMemoryDataset, Data
 import glob
 import os
 from pathlib import Path
+import logging
 import torch
 
 class STPyGDataset(InMemoryDataset):
     """
     An in-memory dataset class for handling training using spatial 
     transcriptomics data.
+
+    Args:
+        root (str): Root directory where the dataset is stored.
+        transform (callable, optional): A function/transform that takes in a 
+            data object and returns a transformed version. Default: None.
+        pre_transform (callable, optional): A function/transform that takes in 
+            a data object and returns a transformed version. The data object 
+            will be transformed before being saved to the disk. Default: None.
+        pre_filter (callable, optional): A function that takes in a data object 
+            and returns True if the data object is to be included in the dataset, 
+            False otherwise. Default: None.
     """
     def __init__(
         self,
         root: str,
         transform: Optional[Callable] = None,
         pre_transform: Optional[Callable] = None,
-        pre_filter: Optional[Callable] = None
+        pre_filter: Optional[Callable] = None,
     ):
         super().__init__(root, transform, pre_transform, pre_filter)
 
@@ -64,4 +76,7 @@ class STPyGDataset(InMemoryDataset):
         filepath = Path(self.processed_dir) / self.processed_file_names[idx]
         data = torch.load(filepath)
         data['tx'].x = data['tx'].x.to_dense()
+        logging.info(f"Loaded {filepath}")
+        logging.info(f"Data: {data}")
+        logging.info(f"Data shape: {data['tx'].x.shape}")
         return data

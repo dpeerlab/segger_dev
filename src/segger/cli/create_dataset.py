@@ -79,12 +79,18 @@ def create_dataset(args: Namespace):
 
     # Fast dataset creation
     elif args.mode == 'experimental':
+        logging.info("Beginning Experimental Construction...")
         logging.info("Initializing sample...")
         sample = STSampleParquet(
             base_dir=args.sample_dir,
             n_workers=args.n_workers,
             sample_type=args.sample_type,
         )
+        # Check if base directory exists
+        if not os.path.exists(args.sample_dir):
+            logging.error(f"Directory '{args.sample_dir}' does not exist.")
+            return
+
         if args.gene_embedding_weights is not None:
             weights = pd.read_csv(args.gene_embedding_weights, index_col=0)
             sample.set_transcript_embedding(weights)
@@ -104,5 +110,6 @@ def create_dataset(args: Namespace):
             frac=args.sampling_rate,
             val_prob=args.val_prob,
             test_prob=args.test_prob,
+            parallel=False,
         )
         logging.info("Dataset saved successfully.")

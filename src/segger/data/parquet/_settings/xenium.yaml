@@ -31,7 +31,8 @@ transcripts:
     - "cell_id"
     - "qv"
   min_quality: 30
-
+  quality: "qv"
+  
 boundaries:
   filename: "nucleus_boundaries.parquet"
   x: "vertex_x"

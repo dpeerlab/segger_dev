@@ -41,6 +41,16 @@ def train_model(args):
     metadata = (
         ["tx", "bd"], [("tx", "belongs", "bd"), ("tx", "neighbors", "tx")]
     )
+
+    logging.info("Initializing Segger model...")
+    # Log all of the model params
+    logging.info(f"num_tx_tokens: {args.num_tx_tokens}")
+    logging.info(f"init_emb: {args.init_emb}")
+    logging.info(f"hidden_channels: {args.hidden_channels}")
+    logging.info(f"out_channels: {args.out_channels}")
+    logging.info(f"heads: {args.heads}")
+    logging.info(f"aggr: {args.aggr}")
+    logging.info(f"num_mid_layers: {args.num_mid_layers}")
     lit_segger = LitSegger(
         num_tx_tokens=args.num_tx_tokens,
         init_emb=args.init_emb,
@@ -51,7 +61,6 @@ def train_model(args):
         num_mid_layers=args.num_mid_layers,
         metadata=metadata,
     )
-
     # Initialize lightning trainer
     trainer = Trainer(
         accelerator=args.accelerator,

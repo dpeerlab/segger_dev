@@ -19,6 +19,7 @@ import torch
 from pqdm.threads import pqdm
 import random
 from segger.data.parquet.transcript_embedding import TranscriptEmbedding
+from segger.data.parquet._covariance_utils import build_gene_cov_matrix
 
 
 # TODO: Add documentation for settings
@@ -212,6 +213,20 @@ class STSampleParquet():
             The number of transcripts.
         """
         return self.transcripts_metadata['n_rows']
+    
+    @cached_property
+    def gene_cov_matrix(self) -> torch.Tensor:
+        """
+        Computes (or loads) a global gene-gene covariance matrix for the entire sample.
+        """
+        transcripts = pd.read_parquet(self._transcripts_filepath)
+        cov = build_gene_cov_matrix(
+            transcripts,
+            embedding=self._transcript_embedding,
+            cell_col=self.settings.boundaries.id,       # or 'cell_id', depends on your naming
+            gene_col=self.settings.transcripts.label    # e.g., 'feature_name'
+        )
+        return cov
 
 
     @cached_property
@@ -416,16 +431,19 @@ class STSampleParquet():
                 extents=region,
                 margin=tile_margin,
             )
+
+            logging.info(f"Processing region: {region}")
             tiles = xm._tile(tile_width, tile_height, tile_size)
             if frac < 1:
                 tiles = random.sample(tiles, int(len(tiles) * frac))
+            logging.info(f"Number of tiles: {len(tiles)}")
             for tile in tiles:
                 # Choose training, test, or validation datasets
                 data_type = np.random.choice(
                     a=['train_tiles', 'test_tiles', 'val_tiles'],
                     p=[1 - (test_prob + val_prob), test_prob, val_prob],
                 )
-                xt = STTile(dataset=xm, extents=tile)
+                xt = STTile(dataset=xm, extents=tile, global_gene_cov=self.gene_cov_matrix)
                 pyg_data = xt.to_pyg_dataset(
                     k_bd=k_bd,
                     dist_bd=dist_bd,
@@ -434,10 +452,14 @@ class STSampleParquet():
                     neg_sampling_ratio=neg_sampling_ratio,
                 )
                 filepath = data_dir / data_type / 'processed' / f'{xt.uid}.pt'
+                logging.info(f"Saving tile: {filepath}")
                 torch.save(pyg_data, filepath)
 
         # TODO: Add Dask backend
         regions = self._get_balanced_regions()
+        self.logger.info(f"Number of regions: {len(regions)}")
+        logging.info(f"Number of regions: {len(regions)}")
+        logging.info(f"Number of Workers: {self.n_workers}")
         if parallel is None:
             parallel = self.n_workers > 1
         if parallel:
@@ -552,13 +574,13 @@ class STInMemoryDataset():
         )
         if min_qv is None:
             min_qv = self.settings.transcripts.min_quality
-        transcripts = utils.filter_transcripts(
-            transcripts,
-            self.settings.transcripts.label,
-            self.settings.transcripts.filter_substrings,
-            min_qv,
-            self.settings.transcripts.quality,
-        )
+        # transcripts = utils.filter_transcripts(
+        #     transcripts,
+        #     self.settings.transcripts.label,
+        #     self.settings.transcripts.filter_substrings,
+        #     min_qv,
+        #     self.settings.transcripts.quality,
+        # )
         
         # Only set object properties once everything finishes successfully
         self.transcripts = transcripts
@@ -744,6 +766,7 @@ class STTile:
         self,
         dataset: STInMemoryDataset,
         extents: shapely.Polygon,
+        global_gene_cov: torch.Tensor = None,
     ):
         """
         Initializes a STTile instance.
@@ -773,6 +796,7 @@ class STTile:
         self.extents = extents
         self.margin = dataset.margin
         self.settings = self.dataset.settings
+        self.global_gene_cov = global_gene_cov
 
         # Internal caches for filtered data
         self._boundaries = None
@@ -922,6 +946,14 @@ class STTile:
         props = embedding.embed(self.transcripts[label])
 
         return props
+
+    def get_transcript_indices(self, labels):
+        """
+        Returns the indices of the transcripts based on the provided labels.
+        """
+        embedding = self.dataset.sample._transcript_embedding
+        embedding.to_indices(labels)
+        return embedding.to_indices(labels)
 
 
     @staticmethod
@@ -1073,7 +1105,17 @@ class STTile:
 
         return props
 
-
+    def compute_tile_gene_cov(self, global_gene_cov):
+        """
+        Computes the gene covariance matrix for the tile.
+        """
+        tile_transcripts = self.transcripts
+        gene_col = self.settings.transcripts.label
+        cell_col = self.settings.boundaries.id
+        embedding = self.dataset.sample._transcript_embedding
+        gene_cov = build_gene_cov_matrix(tile_transcripts, cell_col, gene_col, embedding, global_matrix=global_gene_cov)
+        return gene_cov
+    
     def to_pyg_dataset(
         self,
         #train: bool,
@@ -1186,6 +1228,11 @@ class STTile:
         # Initialize an empty HeteroData object
         pyg_data = HeteroData()
 
+        if 'meta' not in pyg_data: 
+            pyg_data['meta'] = dict()
+            pyg_data['meta']['global_gene_cov'] = self.global_gene_cov
+            pyg_data['meta']['tile_gene_cov'] = self.compute_tile_gene_cov(global_gene_cov=self.global_gene_cov)
+
         # Set up Boundary nodes
         polygons = utils.get_polygons_from_xy(
             self.boundaries,
@@ -1211,6 +1258,10 @@ class STTile:
         )
         pyg_data['tx'].x = self.get_transcript_props()
 
+        pyg_data['tx'].label = self.get_transcript_indices(
+            self.transcripts[self.settings.transcripts.label]
+        )
+
         # Set up Transcript-Transcript neighbor edges
         nbrs_edge_idx, nbrs_dist = self.get_kdtree_edges(
             self.transcripts[self.settings.transcripts.xy],
@@ -1220,7 +1271,7 @@ class STTile:
         )
         pyg_data["tx", "neighbors", "tx"].edge_index = nbrs_edge_idx
         pyg_data["tx", "neighbors", "tx"].edge_attr = nbrs_dist
-
+        
         # Find nuclear transcripts
         tx_cell_ids = self.transcripts[self.settings.boundaries.id]
         cell_ids_map = {idx: i for (i, idx) in enumerate(polygons.index)}
