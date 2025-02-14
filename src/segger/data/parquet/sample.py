@@ -1077,12 +1077,11 @@ class STTile:
 
     def to_pyg_dataset(
         self,
-        #train: bool,
-        neg_sampling_ratio: float = 5,
         k_bd: int = 3,
         dist_bd: float = 15,
         k_tx: int = 3,
         dist_tx: float = 5,
+        neg_sampling_ratio: float = 5,
         area: bool = True,
         convexity: bool = True,
         elongation: bool = True,
@@ -1210,7 +1209,7 @@ class STTile:
             self.transcripts[self.settings.transcripts.xyz].values,
             dtype=torch.float32,
         )
-        pyg_data['tx'].x = self.get_transcript_props()
+        #pyg_data['tx'].x = self.get_transcript_props()
 
         # Set up Transcript-Transcript neighbor edges
         nbrs_edge_idx, nbrs_dist = self.get_kdtree_edges(

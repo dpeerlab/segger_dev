@@ -25,7 +25,7 @@ class SeggerDataModule(LightningDataModule):
         self.num_workers = num_workers
         if k_tx or dist_tx:
             edge_type = 'tx', 'neighbors', 'tx'
-            transform = MaskEdgeIndex(edge_type, k_tx, dist_tx)
+            self.transform = MaskEdgeIndex(edge_type, k_tx, dist_tx)
         else:
             self.transform = None
 
