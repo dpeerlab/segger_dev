@@ -43,7 +43,6 @@ def train_model(args):
     )
 
     logging.info("Initializing Segger model...")
-    # Log all of the model params
     logging.info(f"num_tx_tokens: {args.num_tx_tokens}")
     logging.info(f"init_emb: {args.init_emb}")
     logging.info(f"hidden_channels: {args.hidden_channels}")
@@ -51,6 +50,12 @@ def train_model(args):
     logging.info(f"heads: {args.heads}")
     logging.info(f"aggr: {args.aggr}")
     logging.info(f"num_mid_layers: {args.num_mid_layers}")
+    if(not args.global_gene_cov_weight):
+        logging.info("Global Gene Covariance weight not provided: using default value of 0.01")
+        args.global_gene_cov_weight = 0.01
+    else:
+        logging.info(f"Global Gene Covariance weight: {args.global_gene_cov_weight}")
+
     lit_segger = LitSegger(
         num_tx_tokens=args.num_tx_tokens,
         init_emb=args.init_emb,
@@ -60,6 +65,7 @@ def train_model(args):
         aggr=args.aggr,
         num_mid_layers=args.num_mid_layers,
         metadata=metadata,
+        global_gene_cov_weight=args.global_gene_cov_weight,
     )
     # Initialize lightning trainer
     trainer = Trainer(

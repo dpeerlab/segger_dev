@@ -61,7 +61,7 @@ class LitSegger(LightningModule):
         self.validation_step_outputs = []
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
-    def from_new(self, num_tx_tokens: int, init_emb: int, hidden_channels: int, out_channels: int, heads: int, num_mid_layers: int, aggr: str, metadata: Union[Tuple, Metadata]):
+    def from_new(self, num_tx_tokens: int, init_emb: int, hidden_channels: int, out_channels: int, heads: int, num_mid_layers: int, aggr: str, metadata: Union[Tuple, Metadata], global_gene_cov_weight: float = 0.01):
         """
         Initializes the LitSegger module with new parameters.
 
@@ -98,6 +98,7 @@ class LitSegger(LightningModule):
         self.model = model
         # Save hyperparameters
         self.save_hyperparameters()
+        self.global_gene_cov_weight = global_gene_cov_weight
 
     def from_components(self, model: Segger):
         """
@@ -164,16 +165,25 @@ class LitSegger(LightningModule):
                 logging.info("Computing gene covariance penalty")
                 # Retrieve precomputed gene covariance matrix for this tile
                 gene_cov = batch['meta']['global_gene_cov'][0]  # Shape: [n_genes, n_genes]
-                    
                 logging.info("Computing gene embeddings")
-                num_genes = len(gene_cov)
                 gene_idx = batch['tx'].label
-
+                num_genes = gene_idx.max().item()+1
+                logging.info(f"Number of genes: {num_genes}")
                 # count the number of transcripts per gene
                 logging.info("Counting transcripts per gene")
+                logging.info(f"Max gene index: {gene_idx.max().item()}")
+                logging.info(f"Min gene index: {gene_idx.min().item()}")
+
+                valid_mask = gene_idx >= 0
+                num_removed = (~valid_mask).sum().item()
+
+                if num_removed > 0:
+                    logging.warning(f"Removing {num_removed} invalid transcripts from gene_idx "
+                                    f"of shape {gene_idx.shape} because they have index -1.")
+                # Keep only the valid entries
+                gene_idx = gene_idx[valid_mask]
                 counts = torch.zeros(num_genes, device=gene_idx.device)
-                for tx, g_idx in enumerate(gene_idx):
-                    counts[g_idx] += 1
+                counts = counts.scatter_add(0, gene_idx, torch.ones_like(gene_idx, dtype=torch.float32))
 
                 gene_cov_tensor = torch.tensor(gene_cov.values, dtype=torch.float32)
 
@@ -183,7 +193,7 @@ class LitSegger(LightningModule):
                 # Compute the error (penalty) as the norm of the difference between the observed counts and global_diag
                 cov_penalty = torch.norm(counts - global_diag)
 
-        loss = bce_loss + (cov_penalty * 0.01)
+        loss = bce_loss + (cov_penalty * self.global_gene_cov_weight)
 
         # Log the training loss
         # === 5) Logging ===
