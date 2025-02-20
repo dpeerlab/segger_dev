@@ -6,18 +6,38 @@ from typing import Union
 #from torch_sparse import SparseTensor
 
 class Segger(torch.nn.Module):
-    def __init__(self, num_tx_tokens: int, init_emb: int = 16, hidden_channels: int = 32, num_mid_layers: int = 3, out_channels: int = 32, heads: int = 3):
-        """
-        Initializes the Segger model.
+    """
+    TODO: Class Summary
+    """
 
-        Args:
-            num_tx_tokens (int)  : Number of unique 'tx' tokens for embedding.
-            init_emb (int)       : Initial embedding size for both 'tx' and boundary (non-token) nodes.
-            hidden_channels (int): Number of hidden channels.
-            num_mid_layers (int) : Number of hidden layers (excluding first and last layers).
-            out_channels (int)   : Number of output channels.
-            heads (int)          : Number of attention heads.
+    def __init__(
+        self,
+        num_tx_tokens: int,
+        init_emb: int = 16,
+        hidden_channels: int = 32,
+        num_mid_layers: int = 3,
+        out_channels: int = 32,
+        heads: int = 3
+    ):
         """
+        Initialize the Segger model.
+
+        Parameters
+        ----------
+        num_tx_tokens : int
+            Number of unique 'tx' tokens for embedding.
+        init_emb : int
+            Initial embedding size for both 'tx' and boundary (non-token) nodes.
+        hidden_channels : int
+            Number of hidden channels.
+        num_mid_layers : int
+            Number of hidden layers (excluding first and last layers).
+        out_channels : int
+            Number of output channels.
+        heads : int
+            Number of attention heads.
+        """
+
         super().__init__()
 
         # Embedding for 'tx' (transcript) nodes

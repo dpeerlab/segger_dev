@@ -29,6 +29,7 @@ class LitSegger(LightningModule):
         The loss function used for training, specifically BCEWithLogitsLoss.
     """
 
+
     def __init__(self, **kwargs):
         """
         Initializes the LitSegger module with the given parameters.
@@ -59,6 +60,7 @@ class LitSegger(LightningModule):
 
         self.validation_step_outputs = []
         self.criterion = torch.nn.BCEWithLogitsLoss()
+
 
     def from_new(self, num_tx_tokens: int, init_emb: int, hidden_channels: int, out_channels: int, heads: int, num_mid_layers: int, aggr: str, metadata: Union[Tuple, Metadata]):
         """
@@ -98,9 +100,10 @@ class LitSegger(LightningModule):
         # Save hyperparameters
         self.save_hyperparameters()
 
-    def from_components(self, model: Segger):
+
+    def from_module(self, model: Segger):
         """
-        Initializes the LitSegger module with existing Segger components.
+        Initialize from an existing Segger PyTorch model.
 
         Parameters
         ----------
@@ -108,6 +111,8 @@ class LitSegger(LightningModule):
             The Segger model to be used.
         """
         self.model = model
+        hparams = model.hparams
+
 
     def forward(self, batch: SpatialTranscriptomicsDataset) -> torch.Tensor:
         """
@@ -126,6 +131,7 @@ class LitSegger(LightningModule):
         z = self.model(batch.x_dict, batch.edge_index_dict)
         output = torch.matmul(z['tx'], z['bd'].t())  # Example for bipartite graph
         return output
+
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
@@ -158,6 +164,7 @@ class LitSegger(LightningModule):
         # Log the training loss
         self.log("train_loss", loss, prog_bar=True, batch_size=batch.num_graphs)
         return loss
+
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
@@ -203,6 +210,7 @@ class LitSegger(LightningModule):
         self.log("validation_f1", f1_res, prog_bar=True, batch_size=batch.num_graphs)
         
         return loss
+
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """
