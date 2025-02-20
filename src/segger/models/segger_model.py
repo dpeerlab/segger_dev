@@ -1,6 +1,6 @@
 import torch
-from torch_geometric.nn import GATv2Conv, Linear
-from torch.nn import Embedding
+from torch_geometric.nn import GATv2Conv, Linear, HeteroDictLinear
+from torch.nn import Embedding, ModuleDict, ModuleList
 from torch import Tensor
 from typing import Union
 #from torch_sparse import SparseTensor
@@ -37,8 +37,29 @@ class Segger(torch.nn.Module):
         heads : int
             Number of attention heads.
         """
-
+        print('hi')
         super().__init__()
+
+        self.node_first = ModuleDict(
+            {
+                'tx': Embedding(num_tx_tokens, init_emb),
+                'bd': Linear(-1, init_emb),
+            }
+        )
+        self.conv_layers = ModuleList(
+            [
+                GATv2Conv(init_emb, hidden_channels, heads),
+                *[GATv2Conv(hidden_channels, heads) for _ in range(num_mid_layers)],
+                GATv2Conv(init_emb, hidden_channels, heads),
+            ]
+        )
+        self.node_last = HeteroDictLinear(
+            heads * out_channels,
+            out_channels,
+            types=("tx", "bd")
+        )
+
+
 
         # Embedding for 'tx' (transcript) nodes
         self.tx_embedding = Embedding(num_tx_tokens, init_emb)
