@@ -76,7 +76,4 @@ class STPyGDataset(InMemoryDataset):
         filepath = Path(self.processed_dir) / self.processed_file_names[idx]
         data = torch.load(filepath)
         data['tx'].x = data['tx'].x.to_dense()
-        logging.info(f"Loaded {filepath}")
-        logging.info(f"Data: {data}")
-        logging.info(f"Data shape: {data['tx'].x.shape}")
         return data

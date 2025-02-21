@@ -4,10 +4,12 @@ import torch.nn.functional as F
 import torchmetrics
 from torchmetrics import F1Score
 import lightning as L
+from torch_geometric.utils import to_dense_batch
 from torch_geometric.loader import DataLoader
 from torch_geometric.typing import Metadata
 from torch_geometric.nn import to_hetero
 from torch_geometric.data import HeteroData
+from torch_scatter import scatter_mean
 from segger.models.segger_model import *
 from segger.data.utils import SpatialTranscriptomicsDataset
 from typing import Any, List, Tuple, Union
@@ -61,7 +63,7 @@ class LitSegger(LightningModule):
         self.validation_step_outputs = []
         self.criterion = torch.nn.BCEWithLogitsLoss()
 
-    def from_new(self, num_tx_tokens: int, init_emb: int, hidden_channels: int, out_channels: int, heads: int, num_mid_layers: int, aggr: str, metadata: Union[Tuple, Metadata]):
+    def from_new(self, num_tx_tokens: int, init_emb: int, hidden_channels: int, out_channels: int, heads: int, num_mid_layers: int, aggr: str, metadata: Union[Tuple, Metadata], global_gene_cov_weight: float = 0.01):
         """
         Initializes the LitSegger module with new parameters.
 
@@ -98,6 +100,7 @@ class LitSegger(LightningModule):
         self.model = model
         # Save hyperparameters
         self.save_hyperparameters()
+        self.global_gene_cov_weight = global_gene_cov_weight
 
     def from_components(self, model: Segger):
         """
@@ -127,6 +130,25 @@ class LitSegger(LightningModule):
         z = self.model(batch.x_dict, batch.edge_index_dict)
         output = torch.matmul(z['tx'], z['bd'].t())  # Example for bipartite graph
         return output
+    
+
+    def get_z(self, batch: SpatialTranscriptomicsDataset) -> torch.Tensor:
+        """
+        Get the latent representation of the model.
+        Used for debugging.
+
+        Parameters
+        ----------
+        batch : SpatialTranscriptomicsDataset
+            The batch of data, including node features and edge indices.
+
+        Returns
+        -------
+        torch.Tensor
+            The latent representation of the model.
+        """
+        z = self.model(batch.x_dict, batch.edge_index_dict)
+        return z
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
@@ -162,28 +184,25 @@ class LitSegger(LightningModule):
         
         if ('meta' in batch and 'global_gene_cov' in batch['meta']):
                 logging.info("Computing gene covariance penalty")
-                # Retrieve precomputed gene covariance matrix for this tile
-                gene_cov = batch['meta']['global_gene_cov'][0]  # Shape: [n_genes, n_genes]
-                    
-                logging.info("Computing gene embeddings")
-                num_genes = len(gene_cov)
-                gene_idx = batch['tx'].label
+                gene_idx = batch['tx'].label            # shape: [N_tx]
+                num_genes = gene_idx.max().item() + 1   # total number of genes
 
-                # count the number of transcripts per gene
-                logging.info("Counting transcripts per gene")
-                counts = torch.zeros(num_genes, device=gene_idx.device)
-                for tx, g_idx in enumerate(gene_idx):
-                    counts[g_idx] += 1
+                valid_mask = (gene_idx >= 0)           # Filter out any negative labels
+                gene_idx = gene_idx[valid_mask]
+                z_tx = z['tx']
+                z_tx = z_tx[valid_mask] 
+                # We can do this by meshgrid-like expansions:
+                gene_embs = scatter_mean(z_tx, gene_idx, dim=0, dim_size=num_genes)
+                gene_gene_sim = torch.matmul(gene_embs, gene_embs.t())  # [G, G]
+                gene_gene_sim = torch.tanh(gene_gene_sim)
 
-                gene_cov_tensor = torch.tensor(gene_cov.values, dtype=torch.float32)
+                gene_cov_df = batch['meta']['global_gene_cov'][0]  # your global cov as a pandas DF
+                gene_cov_tensor = torch.tensor(gene_cov_df.values, dtype=torch.float32, device=z['tx'].device)
 
-                # Now extract the diagonal.
-                global_diag = gene_cov_tensor.diag().to(counts.device)
+                cov_penalty = F.mse_loss(gene_gene_sim, gene_cov_tensor)
 
-                # Compute the error (penalty) as the norm of the difference between the observed counts and global_diag
-                cov_penalty = torch.norm(counts - global_diag)
 
-        loss = bce_loss + (cov_penalty * 0.01)
+        loss = bce_loss + (cov_penalty * self.global_gene_cov_weight)
 
         # Log the training loss
         # === 5) Logging ===

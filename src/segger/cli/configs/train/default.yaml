@@ -77,3 +77,8 @@ epochs:
   type: int
   default: 100
   help: "Number of epochs"
+
+global_gene_cov_weight: 
+  type: float
+  default: 0.01
+  help: "Weight for global gene coverage loss"
