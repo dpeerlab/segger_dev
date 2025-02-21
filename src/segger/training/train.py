@@ -4,10 +4,12 @@ import torch.nn.functional as F
 import torchmetrics
 from torchmetrics import F1Score
 import lightning as L
+from torch_geometric.utils import to_dense_batch
 from torch_geometric.loader import DataLoader
 from torch_geometric.typing import Metadata
 from torch_geometric.nn import to_hetero
 from torch_geometric.data import HeteroData
+from torch_scatter import scatter_mean
 from segger.models.segger_model import *
 from segger.data.utils import SpatialTranscriptomicsDataset
 from typing import Any, List, Tuple, Union
@@ -128,6 +130,25 @@ class LitSegger(LightningModule):
         z = self.model(batch.x_dict, batch.edge_index_dict)
         output = torch.matmul(z['tx'], z['bd'].t())  # Example for bipartite graph
         return output
+    
+
+    def get_z(self, batch: SpatialTranscriptomicsDataset) -> torch.Tensor:
+        """
+        Get the latent representation of the model.
+        Used for debugging.
+
+        Parameters
+        ----------
+        batch : SpatialTranscriptomicsDataset
+            The batch of data, including node features and edge indices.
+
+        Returns
+        -------
+        torch.Tensor
+            The latent representation of the model.
+        """
+        z = self.model(batch.x_dict, batch.edge_index_dict)
+        return z
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         """
@@ -163,35 +184,23 @@ class LitSegger(LightningModule):
         
         if ('meta' in batch and 'global_gene_cov' in batch['meta']):
                 logging.info("Computing gene covariance penalty")
-                # Retrieve precomputed gene covariance matrix for this tile
-                gene_cov = batch['meta']['global_gene_cov'][0]  # Shape: [n_genes, n_genes]
-                logging.info("Computing gene embeddings")
-                gene_idx = batch['tx'].label
-                num_genes = gene_idx.max().item()+1
-                logging.info(f"Number of genes: {num_genes}")
-                # count the number of transcripts per gene
-                logging.info("Counting transcripts per gene")
-                logging.info(f"Max gene index: {gene_idx.max().item()}")
-                logging.info(f"Min gene index: {gene_idx.min().item()}")
+                gene_idx = batch['tx'].label            # shape: [N_tx]
+                num_genes = gene_idx.max().item() + 1   # total number of genes
 
-                valid_mask = gene_idx >= 0
-                num_removed = (~valid_mask).sum().item()
-
-                if num_removed > 0:
-                    logging.warning(f"Removing {num_removed} invalid transcripts from gene_idx "
-                                    f"of shape {gene_idx.shape} because they have index -1.")
-                # Keep only the valid entries
+                valid_mask = (gene_idx >= 0)           # Filter out any negative labels
                 gene_idx = gene_idx[valid_mask]
-                counts = torch.zeros(num_genes, device=gene_idx.device)
-                counts = counts.scatter_add(0, gene_idx, torch.ones_like(gene_idx, dtype=torch.float32))
+                z_tx = z['tx']
+                z_tx = z_tx[valid_mask] 
+                # We can do this by meshgrid-like expansions:
+                gene_embs = scatter_mean(z_tx, gene_idx, dim=0, dim_size=num_genes)
+                gene_gene_sim = torch.matmul(gene_embs, gene_embs.t())  # [G, G]
+                gene_gene_sim = torch.tanh(gene_gene_sim)
 
-                gene_cov_tensor = torch.tensor(gene_cov.values, dtype=torch.float32)
+                gene_cov_df = batch['meta']['global_gene_cov'][0]  # your global cov as a pandas DF
+                gene_cov_tensor = torch.tensor(gene_cov_df.values, dtype=torch.float32, device=z['tx'].device)
 
-                # Now extract the diagonal.
-                global_diag = gene_cov_tensor.diag().to(counts.device)
+                cov_penalty = F.mse_loss(gene_gene_sim, gene_cov_tensor)
 
-                # Compute the error (penalty) as the norm of the difference between the observed counts and global_diag
-                cov_penalty = torch.norm(counts - global_diag)
 
         loss = bce_loss + (cov_penalty * self.global_gene_cov_weight)
 
