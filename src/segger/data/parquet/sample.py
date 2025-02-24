@@ -1006,7 +1006,9 @@ class STTile:
         """
         # KDTree search
         tree = KDTree(index_coords)
-        dist, idx = tree.query(query_coords, k, max_distance)
+        dist, idx = tree.query(
+            query_coords, k, distance_upper_bound=max_distance
+        )
 
         # To sparse adjacency
         edge_index = torch.vstack([
