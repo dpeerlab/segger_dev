@@ -220,6 +220,8 @@ class STSampleParquet():
         Computes (or loads) a global gene-gene covariance matrix for the entire sample.
         """
         transcripts = pd.read_parquet(self._transcripts_filepath)
+        # only use transcripts who's overlaps_nucleus column is 1
+        transcripts = transcripts[transcripts['overlaps_nucleus'] == 1]
         cov = build_gene_cov_matrix(
             transcripts,
             embedding=self._transcript_embedding,
