@@ -8,45 +8,126 @@ from torch.nn import (
     functional as F
 )
 from torch import Tensor
-from typing import Union, Optional
+from typing import Dict, Tuple, List, Union, Optional
 
 
 class SkipGAT(Module):
     """
-    TODO: Add description.
+    Graph Attention module that encapsulates a HeteroConv layer with two GATv2
+    convolutions for different edge types. The attention weights from the last
+    forward pass are stored internally and can be accessed via the
+    `attention_weights` property.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input features.
+    out_channels : int
+        Number of output features.
+    heads : int
+        Number of attention heads.
     """
+
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        heads: int,
-    ):
-        """
-        TODO: Add description.
-        """
+        heads: int
+    ) -> None:
         super().__init__()
 
-        # Message-passing
+        # Build a HeteroConv that internally uses GATv2Conv for each edge type.
         self.conv = HeteroConv(
             convs={
-                ('tx','neighbors', 'tx'): GATv2Conv(
+                ('tx', 'neighbors', 'tx'): GATv2Conv(
                     in_channels=in_channels,
                     out_channels=out_channels,
-                    heads=heads,
+                    heads=heads
                 ),
                 ('tx', 'belongs', 'bd'): GATv2Conv(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     heads=heads,
-                    add_self_loops=False,
+                    add_self_loops=False
                 ),
             },
-            aggr='sum',
+            aggr='sum'
         )
 
-    def forward(self, x_dict, edge_index_dict):
-        x_dict = self.conv(x_dict, edge_index_dict)
+        # This will store the attention weights from the last forward pass.
+        self._attn_weights: Dict[Tuple[str, str, str], Tensor] = {}
+
+        # Register a forward hook to capture attention weights internally.
+        edge_type = 'tx', 'neighbors', 'tx'
+        self.conv.convs[edge_type].register_forward_hook(
+            self._make_hook(edge_type),
+            with_kwargs=True,
+        )
+
+    def _make_hook(self, edge_type: Tuple[str, str, str]):
+        """
+        Internal hook function that captures attention weights from the
+        forward pass of each GATv2Conv submodule.
+
+        Parameters
+        ----------
+        edge_type : tuple of str
+            The edge type associated with this GATv2Conv.
+        """
+        def _store_attn_weights(module, inputs, kwargs, outputs) -> None:
+            self._attn_weights[edge_type] = outputs[1][1]
+        return _store_attn_weights
+
+    def forward(
+        self,
+        x_dict: Dict[str, Tensor],
+        edge_index_dict: Dict[str, Tensor]
+    ) -> Dict[str, Tensor]:
+        """
+        Forward pass for SkipGAT. Always calls HeteroConv with
+        `return_attention_weights=True`, but never returns them from
+        this method. Attention weights are stored internally via the hook.
+
+        Parameters
+        ----------
+        x_dict : dict of str -> Tensor
+            Node features for each node type.
+        edge_index_dict : dict of str -> Tensor
+            Edge indices for each edge type.
+
+        Returns
+        -------
+        x_dict_out : dict of str -> Tensor
+            Updated node embeddings after convolution.
+        """
+        # Always request attention weights, but do not return them here.
+        xdict, _ = self.conv(
+            x_dict,
+            edge_index_dict,
+            return_attention_weights_dict = {'tx': True, 'bd': False},
+        )
         return x_dict
+
+    @property
+    def attention_weights(self) -> Dict[Tuple[str, str, str], Tensor]:
+        """
+        The attention weights from the most recent forward pass.
+
+        Raises
+        ------
+        RuntimeError
+            If no forward pass has been performed yet.
+
+        Returns
+        -------
+        dict of (str, str, str) -> Tensor
+            Mapping each edge type to its attention weight tensor of shape
+            [num_edges, num_heads].
+        """
+        if not self._attn_weights:
+            msg = "Attention weights are empty. Please perform a forward pass."
+            raise AttributeError(msg)
+        return self._attn_weights
 
 
 class Segger(torch.nn.Module):
@@ -90,6 +171,8 @@ class Segger(torch.nn.Module):
         super().__init__()
         # Store hyperparameters for PyTorch Lightning
         self.hparams = locals()
+        for k in ['self', '__class__']: 
+            self.hparams.pop(k)
         # First layer: ? -> in
         self.lin_first = ModuleDict(
             {
@@ -182,3 +265,29 @@ class Segger(torch.nn.Module):
         z_bd = z["bd"][edge_index[1]]
 
         return (z_tx * z_bd).sum(dim=-1)
+
+    def get_attention_weights(self, edge_type: Tuple[str]) -> Tensor:
+        """
+        Return a stacked tensor of attention weights for the given edge type
+        from each SkipGAT layer, raising an error if the edge type is missing
+        in any layer.
+
+        Parameters
+        ----------
+        edge_type : str
+            The edge type key, e.g. ('tx','neighbors','tx')
+
+        Returns
+        -------
+        Tensor
+            A 3D tensor of shape [num_layers, num_edges, num_heads].
+        """
+        try:
+            attention_weights = []
+            for i, layer in enumerate(self.conv_layers):
+                attention_weights.append(layer.attention_weights[edge_type])
+        except KeyError as e:
+            msg = f"Edge type '{edge_type}' not found in layer {i}."
+            raise KeyError(msg) from e
+
+        return torch.stack(attention_weights)

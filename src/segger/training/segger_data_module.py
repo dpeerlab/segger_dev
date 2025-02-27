@@ -5,7 +5,7 @@ from typing import Optional
 from pathlib import Path
 from torchvision.transforms import Lambda
 from segger.data.parquet.pyg_dataset import STPyGDataset
-from segger.data.parquet._utils import MaskEdgeIndex, Embed
+from segger.data.parquet._utils import MaskEdgeIndex #, Embed
 
 
 # TODO: Add documentation
