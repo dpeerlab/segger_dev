@@ -135,8 +135,18 @@ def get_similarity_scores(
     values = similarity[nbr_idx != -1].flatten()
     sparse_sim = torch.sparse_coo_tensor(indices, values, shape)
 
-    # Return in dense format for backwards compatibility
-    scores = sparse_sim.to_dense().detach().cpu()
+    # Check available GPU memory before converting to dense
+    free_mem = torch.cuda.mem_get_info()[0]  # Free memory in bytes
+    element_size = torch.cuda.FloatTensor(0)
+    required_mem = (shape[0] * shape[1] * element_size) * 2  # Required memory in bytes
+
+    if required_mem < free_mem * 0.9:  # If we have enough space, stay on GPU
+        print("Running `.to_dense()` on GPU")
+        scores = sparse_sim.to_dense()
+    else:
+        print("Not enough GPU memory! Falling back to CPU")
+        sparse_sim = sparse_sim.cpu()  # Move sparse tensor to CPU first
+        scores = sparse_sim.to_dense()
 
     return scores
 
