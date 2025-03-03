@@ -63,7 +63,7 @@ class LitSegger(LightningModule):
         output = self.model.decode(z, edge_label_index)
         return output
 
-    def get_loss(self, batch: Any) -> torch.Tensor:
+    def get_bce_loss(self, batch: Any) -> torch.Tensor:
         """
         Compute the binary cross-entropy loss for the given batch.
 
@@ -109,7 +109,7 @@ class LitSegger(LightningModule):
             Computed training loss for the current batch.
         """
         # Get loss
-        loss = self.get_loss(batch)
+        loss = self.get_bce_loss(batch)
 
         # Log the training loss
         self.log(
@@ -138,7 +138,7 @@ class LitSegger(LightningModule):
             The loss value for the current validation step.
         """
         # Get loss
-        loss = self.get_loss(batch)
+        loss = self.get_bce_loss(batch)
 
         # Apply sigmoid to logits for AUROC and F1 metrics
         edge_label = batch['tx', 'belongs', 'bd'].edge_label

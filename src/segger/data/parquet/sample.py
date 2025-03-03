@@ -31,7 +31,6 @@ class STSampleParquet():
     to ST samples. It supports parallel processing and efficient handling of 
     transcript and boundary data.
     """
-
     def __init__(
         self,
         base_dir: os.PathLike,
@@ -77,7 +76,6 @@ class STSampleParquet():
          # Setup default embedding for transcripts
         classes = self.transcripts_metadata['feature_names']
         self._transcript_embedding = TranscriptEmbedding(np.array(classes))
-
 
     @classmethod
     def _get_parquet_metadata(
@@ -145,7 +143,6 @@ class STSampleParquet():
 
         return summary
 
-
     @cached_property
     def transcripts_metadata(self) -> dict:
         """
@@ -175,8 +172,8 @@ class STSampleParquet():
             mask = pc.invert(pc.match_substring_regex(names, pattern))
             metadata['feature_names'] = pc.filter(names, mask).tolist()
             self._transcripts_metadata = metadata
-        return self._transcripts_metadata
 
+        return self._transcripts_metadata
 
     @cached_property
     def boundaries_metadata(self) -> dict:
@@ -199,8 +196,8 @@ class STSampleParquet():
                 self.settings.boundaries.columns,
             )
             self._boundaries_metadata = metadata
-        return self._boundaries_metadata
 
+        return self._boundaries_metadata
 
     @property
     def n_transcripts(self) -> int:
@@ -238,7 +235,6 @@ class STSampleParquet():
 
         return self._extents
 
-
     def _get_balanced_regions(
         self,
     ) -> List[shapely.Polygon]:
@@ -266,7 +262,6 @@ class STSampleParquet():
         ndtree = NDTree(data, self.n_workers, extents=self.extents)
 
         return ndtree.boxes
-
 
     @staticmethod
     def _setup_directory(
@@ -308,7 +303,6 @@ class STSampleParquet():
                     msg = f"Directory '{tile_dir}' must be empty."
                     raise AssertionError(msg)
 
-
     def set_transcript_embedding(self, weights: pd.DataFrame):
         """
         Sets the transcript embedding for the sample.
@@ -327,7 +321,6 @@ class STSampleParquet():
         classes = np.array(self._transcripts_metadata['feature_names'])
         self._transcript_embedding = TranscriptEmbedding(classes, weights)
 
-
     def save(
         self,
         data_dir: os.PathLike,
@@ -343,6 +336,7 @@ class STSampleParquet():
         frac: float = 1.,
         val_prob: float = 0.1,
         test_prob: float = 0.2,
+        soft_gate_attention: bool = True,
         parallel: Optional[bool] = None,
     ):
         """
@@ -381,6 +375,8 @@ class STSampleParquet():
             Proportion of data for use for validation split.
         test_prob: float, optional, default 0.2
             Proportion of data for use for test split.
+        soft_gate_attention: bool, default True
+            Whether to use soft-gated attention on the transcript graph.
         parallel: bool, optional
             Whether to save dataset in parallel across 'n_workers' workers.
 
@@ -409,6 +405,14 @@ class STSampleParquet():
         # Setup directory structure to save tiles
         data_dir = Path(data_dir)
         STSampleParquet._setup_directory(data_dir)
+
+        # Establish sample-wide gene pairs to soft-gate during training
+        self._soft_gate_attention = soft_gate_attention
+        if soft_gate_attention:
+            self._soft_gate_pairs = utils.get_soft_gate_pairs(
+                self._transcripts_filepath,
+                thresh=-0.25,
+            )
 
         # Function to parallelize over workers
         def func(region):
@@ -448,7 +452,6 @@ class STSampleParquet():
             for region in tqdm(regions):
                 outs.append(func(region))
         return outs
-
 
 # TODO: Add documentation for settings
 class STInMemoryDataset():
@@ -525,7 +528,6 @@ class STInMemoryDataset():
             leafsize=1,
         )
 
-
     def _load_transcripts(self, path: os.PathLike, min_qv: float = None):
         """
         Loads and filters the transcripts dataframe for the dataset.
@@ -564,7 +566,6 @@ class STInMemoryDataset():
         # Only set object properties once everything finishes successfully
         self.transcripts = transcripts
 
-
     def _load_boundaries(self, path: os.PathLike):
         """
         Loads and filters the boundaries dataframe for the dataset.
@@ -597,7 +598,6 @@ class STInMemoryDataset():
             label=self.settings.boundaries.label,
         )
         self.boundaries = boundaries
-
 
     def _get_rectangular_tile_bounds(
         self,
@@ -633,7 +633,6 @@ class STInMemoryDataset():
                 tiles.append(shapely.box(x_min, y_min, x_max, y_max))
 
         return tiles
-
 
     def _get_balanced_tile_bounds(
         self,
@@ -674,7 +673,6 @@ class STInMemoryDataset():
         node = self.kdtree_tx.tree
         bounds = Rectangle(self.kdtree_tx.mins, self.kdtree_tx.maxes)
         return recurse(node, bounds)
-
 
     def _tile(self,
         width: Optional[float] = None,
@@ -723,7 +721,6 @@ class STInMemoryDataset():
             logging.error(msg)
             raise ValueError
 
-
 # TODO: Add documentation for settings
 class STTile:
     """
@@ -740,7 +737,6 @@ class STTile:
     transcripts : pd.DataFrame
         Filtered transcripts within the tile extents.
     """
-
     def __init__(
         self,
         dataset: STInMemoryDataset,
@@ -779,7 +775,6 @@ class STTile:
         self._boundaries = None
         self._transcripts = None
 
-
     @property
     def uid(self) -> str:
         """
@@ -811,7 +806,6 @@ class STTile:
         uid = f'x={x_min}_y={y_min}_w={x_max-x_min}_h={y_max-y_min}'
         return uid
 
-
     @cached_property
     def boundaries(self) -> pd.DataFrame:
         """
@@ -831,7 +825,6 @@ class STTile:
         if self._boundaries is None:
             self._boundaries = self.get_filtered_boundaries()
         return self._boundaries
-
 
     @cached_property
     def transcripts(self) -> pd.DataFrame:
@@ -853,7 +846,6 @@ class STTile:
             self._transcripts = self.get_filtered_transcripts()
         return self._transcripts
 
-
     def get_filtered_boundaries(self) -> pd.DataFrame:
         """
         Filters the boundaries in the sample to include only those within
@@ -874,7 +866,6 @@ class STTile:
             label=self.settings.boundaries.label,
         )
         return filtered_boundaries
-
 
     def get_filtered_transcripts(self) -> pd.DataFrame:
         """
@@ -900,7 +891,6 @@ class STTile:
 
         return filtered_transcripts
 
-
     def get_transcript_props(self) -> torch.Tensor:
         """
         Encodes transcript features in a sparse format.
@@ -923,7 +913,6 @@ class STTile:
         props = embedding.embed(self.transcripts[label])
 
         return props
-
 
     @staticmethod
     def get_polygon_props(
@@ -968,7 +957,6 @@ class STTile:
         
         return props
 
-
     @staticmethod
     def get_kdtree_edges(
         index_coords: np.ndarray,
@@ -1006,7 +994,9 @@ class STTile:
         """
         # KDTree search
         tree = KDTree(index_coords)
-        dist, idx = tree.query(query_coords, k, max_distance)
+        dist, idx = tree.query(
+            query_coords, k, distance_upper_bound=max_distance
+        )
 
         # To sparse adjacency
         edge_index = torch.vstack([
@@ -1021,7 +1011,6 @@ class STTile:
         )
         dist = torch.tensor(dist).flatten()
         return edge_index, dist
-
 
     def get_boundary_props(
         self,
@@ -1074,14 +1063,14 @@ class STTile:
 
         return props
 
-
     def to_pyg_dataset(
         self,
+        #train: bool,
+        neg_sampling_ratio: float = 5,
         k_bd: int = 3,
         dist_bd: float = 15,
         k_tx: int = 3,
         dist_tx: float = 5,
-        neg_sampling_ratio: float = 5,
         area: bool = True,
         convexity: bool = True,
         elongation: bool = True,
@@ -1209,7 +1198,7 @@ class STTile:
             self.transcripts[self.settings.transcripts.xyz].values,
             dtype=torch.float32,
         )
-        #pyg_data['tx'].x = self.get_transcript_props()
+        pyg_data['tx'].x = self.get_transcript_props()
 
         # Set up Transcript-Transcript neighbor edges
         nbrs_edge_idx, nbrs_dist = self.get_kdtree_edges(
@@ -1220,7 +1209,7 @@ class STTile:
         )
         edge_type = ("tx", "neighbors", "tx")
         pyg_data[edge_type].edge_index = nbrs_edge_idx
-        pyg_data[edge_type].edge_attr = nbrs_dist
+        #pyg_data[edge_type].edge_attr = nbrs_dist
         pyg_data[edge_type].k = k_tx
 
         # Find nuclear transcripts
@@ -1257,5 +1246,13 @@ class STTile:
         mask = torch.nonzero(torch.any(mask, 1)).squeeze()
         edges.edge_label_index = edges.edge_label_index[:, mask]
         edges.edge_label = edges.edge_label[mask]
+
+        # Select gene pairs to soft-gate attention weights
+        if self.dataset.sample._soft_gate_attention:
+            genes_a, genes_b = self.dataset.sample._soft_gate_pairs
+            lbl = self.transcripts[self.settings.label]
+            edges_a, edges_b = pyg_data[edge_type].edge_index
+            mask = (lbl[edges_a] in genes_a) & (lbl[edges_b] in genes_b)
+            pyg_data[edge_type].edge_attr = mask
 
         return pyg_data

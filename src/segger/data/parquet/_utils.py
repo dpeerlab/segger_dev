@@ -13,6 +13,7 @@ from torch_geometric.data import HeteroData
 from torch_geometric.edge_index import EdgeIndex
 from torch_geometric.transforms import BaseTransform
 import torch
+import os
 
 
 def get_xy_extents(
@@ -325,6 +326,57 @@ def _dict_to_namespace(d):
         d = {k: _dict_to_namespace(v) for k, v in d.items()}
         return SimpleNamespace(**d)
     return d
+
+def get_soft_gate_pairs(
+    filepath: os.PathLike,
+    settings: SimpleNamespace,
+    thresh: float
+):
+    #TODO: Add documentation
+
+    # Read in transcripts
+    cell_label = settings.transcripts.boundary_id
+    gene_label = settings.transcripts.label
+    transcripts = pd.read_parquet(
+        filepath,
+        columns=[cell_label, gene_label, settings.transcripts.quality],
+        filters=[
+            ('overlaps_nucleus', '==', 1)],
+    )
+    transcripts = filter_transcripts(
+        transcripts,
+        label=settings.transcripts.label,
+        filter_substrings=settings.transcripts.filter_substrings,
+        min_qv=settings.transcripts.min_quality,
+    )
+
+    # Feature names to indices
+    ids_cell, labels_cell = pd.factorize(transcripts[cell_label])
+    ids_gene, labels_gene = pd.factorize(transcripts[gene_label])
+    # Remove NaN values
+    mask = ids_cell >= 0
+    ids_cell = ids_cell[mask]
+    ids_gene = ids_gene[mask]
+    # Sort row index
+    order = np.argsort(ids_cell)
+    ids_cell = ids_cell[order]
+    ids_gene = ids_gene[order]
+    # Build sparse matrix
+    X = sp.sparse.coo_matrix(
+        (
+            np.ones_like(ids_cell),
+            np.stack([ids_cell, ids_gene]),
+        ),
+        shape=(len(labels_cell), len(labels_gene)),
+    )
+    # Compute correlations
+    C = pd.DataFrame(
+        np.corrcoef(X.todense().T),
+        index=labels_gene,
+        columns=labels_gene
+    )
+
+    return C
 
 
 class MaskEdgeIndex(BaseTransform):
