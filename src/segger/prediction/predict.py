@@ -137,7 +137,7 @@ def get_similarity_scores(
 
     # Check available GPU memory before converting to dense
     free_mem = torch.cuda.mem_get_info()[0]  # Free memory in bytes
-    element_size = torch.cuda.FloatTensor(0)
+    element_size = torch.cuda.FloatTensor(0).element_size()  # Precision in bytes
     required_mem = (shape[0] * shape[1] * element_size) * 2  # Required memory in bytes
 
     if required_mem < free_mem * 0.9:  # If we have enough space, stay on GPU

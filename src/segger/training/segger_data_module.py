@@ -16,11 +16,13 @@ class SeggerDataModule(LightningDataModule):
         data_dir: os.PathLike,
         batch_size: int = 4,
         num_workers: int = 1,
+        train_shuffle = True,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.train_shuffle = train_shuffle
 
     # TODO: Add documentation
     def setup(self, stage=None):
@@ -35,7 +37,7 @@ class SeggerDataModule(LightningDataModule):
 
     # TODO: Add documentation
     def train_dataloader(self):
-        return DataLoader(self.train, shuffle=True, **self.loader_kwargs)
+        return DataLoader(self.train, shuffle=self.train_shuffle, **self.loader_kwargs)
 
     # TODO: Add documentation
     def test_dataloader(self):

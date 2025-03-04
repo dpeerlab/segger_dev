@@ -58,6 +58,7 @@ class Segger(torch.nn.Module):
         x = x[:, None]    
         index = ((x.sum(-1) * is_one_dim).int())
         index = index.clamp(0, self.tx_embedding.num_embeddings - 1)
+        index = index.to(x.device)
         x = self.tx_embedding(index) * is_one_dim + self.lin0(x.float())  * (1 - is_one_dim)
         x = x.squeeze()
         # First layer
