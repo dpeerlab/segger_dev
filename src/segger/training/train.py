@@ -86,7 +86,7 @@ class LitSegger(LightningModule):
         z = self.model(batch.x_dict, batch.edge_index_dict)
         output = self.model.decode(z, edge_label_index)
 
-        # Compute binary cross-entropy loss with logits (no sigmoid here)
+        # Compute binary cross-entropy loss with logits (sigmoid in function)
         loss = torch.nn.BCEWithLogitsLoss(output, edge_label)
 
         return loss
