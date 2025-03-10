@@ -1224,8 +1224,9 @@ class STTile:
         row_idx = np.where(is_nuclear)[0]
         col_idx = tx_cell_ids.iloc[row_idx].map(cell_ids_map)
         blng_edge_idx = torch.tensor(np.stack([row_idx, col_idx])).long()
-        pyg_data["tx", "belongs", "bd"].edge_index = blng_edge_idx
+        pyg_data["tx", "belongs", "bd"].pos_edge_index = blng_edge_idx
 
+        '''
         # Add negative edges for training
         # Need more time-efficient solution than this
         edge_type = ('tx', 'belongs', 'bd')
@@ -1254,5 +1255,6 @@ class STTile:
             edges_a, edges_b = pyg_data[edge_type].edge_index
             mask = (lbl[edges_a] in genes_a) & (lbl[edges_b] in genes_b)
             pyg_data[edge_type].edge_attr = mask
+        '''
 
         return pyg_data

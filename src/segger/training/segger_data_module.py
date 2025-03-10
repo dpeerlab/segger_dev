@@ -3,9 +3,9 @@ from torch_geometric.loader import DataLoader
 import os
 from typing import Optional
 from pathlib import Path
-from torchvision.transforms import Lambda
+from torchvision.transforms import Compose, Lambda
 from segger.data.parquet.pyg_dataset import STPyGDataset
-from segger.data.parquet._utils import MaskEdgeIndex #, Embed
+from segger.data.parquet._transforms import MaskEdgeIndex, NegativeSampling
 
 
 # TODO: Add documentation
@@ -16,6 +16,7 @@ class SeggerDataModule(LightningDataModule):
         data_dir: os.PathLike,
         batch_size: int = 4,
         num_workers: int = 1,
+        negative_sampling_ratio: float = 1.,
         k_tx: Optional[int] = None,
         dist_tx: Optional[float] = None,
     ):
@@ -23,11 +24,18 @@ class SeggerDataModule(LightningDataModule):
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.num_workers = num_workers
+
+        # Add graph transforms
+        self.transform = []
         if k_tx or dist_tx:
             edge_type = 'tx', 'neighbors', 'tx'
-            self.transform = MaskEdgeIndex(edge_type, k_tx, dist_tx)
-        else:
-            self.transform = None
+            tm = MaskEdgeIndex(edge_type, k_tx, dist_tx)
+            self.transforms.append(tm)
+        if negative_sampling_ratio > 0:
+            edge_type = 'tx', 'belongs', 'bd'
+            tm = NegativeSampling(edge_type, negative_sampling_ratio)
+            self.transforms.append(tm)
+        self.transform = Compose(self.transforms)
 
     # TODO: Add documentation
     def setup(self, stage=None):
