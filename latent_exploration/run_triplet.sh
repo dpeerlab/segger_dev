@@ -1,0 +1,36 @@
+#!/bin/bash
+#SBATCH --job-name=T_segger_experiments       # Job name
+#SBATCH --output=T_segger_experiments.out    # Output file (%j will be replaced with the job ID)
+#SBATCH --time=36:00:00
+#SBATCH --partition=gpuqueue
+#SBATCH --ntasks-per-node=8
+#SBATCH --mem-per-cpu=24G
+#SBATCH --gres=gpu:3g.39gb:1
+
+python train_segger_experiments.py \
+  --cov_data_dir "/data/peer/riffled/segger/development_tools/data/xenium_human_colon/datasets_with_cov_with_genes_cleaned_for_nuclear" \
+  --no_cov_data_dir /data/peer/riffled/segger/development_tools/data/xenium_human_colon/datasets_with_cov_with_genes_cleaned_for_nuclear \
+  --epochs 50 \
+  --batch_size_train 3 \
+  --num_tx_tokens 500 \
+  --model_dir /data/peer/riffled/segger/development_tools/data/xenium_human_colon/models/models_k=8_with_cov_notebook_no_cov \
+  --transcripts_parquet /data/peer/riffled/segger/development_tools/data/xenium_human_colon/xenium/transcripts.parquet \
+  --bce_loss=True \
+  --triplet_loss=True \
+  --enrich_global_edges=False \
+  --global_gene_cov_weight 1.0 \
+  --output_dir data/peer/riffled/segger/development_tools/segger_experiments/bce_true_triplet_true_enrich_global_edges_false_global_gene_cov_weight_1.0
+
+python train_segger_experiments.py \
+  --cov_data_dir "/data/peer/riffled/segger/development_tools/data/xenium_human_colon/datasets_with_cov_with_genes_cleaned_for_nuclear" \
+  --no_cov_data_dir /data/peer/riffled/segger/development_tools/data/xenium_human_colon/datasets_with_cov_with_genes_cleaned_for_nuclear \
+  --epochs 50 \
+  --batch_size_train 3 \
+  --num_tx_tokens 500 \
+  --model_dir /data/peer/riffled/segger/development_tools/data/xenium_human_colon/models/models_k=8_with_cov_notebook_no_cov \
+  --transcripts_parquet /data/peer/riffled/segger/development_tools/data/xenium_human_colon/xenium/transcripts.parquet \
+  --bce_loss=False \
+  --triplet_loss=True \
+  --enrich_global_edges=False \
+  --global_gene_cov_weight 1.0 \
+  --output_dir data/peer/riffled/segger/development_tools/segger_experiments/bce_true_triplet_true_enrich_global_edges_true_global_gene_cov_weight_1.0

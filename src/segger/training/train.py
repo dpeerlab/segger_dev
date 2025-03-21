@@ -326,18 +326,16 @@ class LitSegger(LightningModule):
                 s = 5.0  # Tunable Scaling factored
                 scaled_penalty = torch.tensor(s * cov_penalty)
                 transformed_cov_penalty = torch.sigmoid(scaled_penalty) / torch.sigmoid(torch.tensor(s))
-
-        triplets = self.construct_triplets(batch)
-        result_triplet_loss = self.calc_triplet_loss(z['tx'], triplets)
         
-        # Triplet loss
         if self.triplet_loss:
-            triplet_loss_weight = 1
+            result_triplet_loss = (
+                self.calc_triplet_loss(z['tx'], self.construct_triplets(batch))
+            )
         else:
-            triplet_loss_weight = 0
+            result_triplet_loss = torch.tensor(0.0, device=z['tx'].device, dtype=torch.float32)
 
         if (self.bce_loss):
-            loss = bce_loss + (transformed_cov_penalty * self.global_gene_cov_weight) + (result_triplet_loss * triplet_loss_weight)
+            loss = bce_loss + (transformed_cov_penalty * self.global_gene_cov_weight) + (result_triplet_loss)
         else:
             loss = cov_penalty * self.global_gene_cov_weight
 
